@@ -2038,6 +2038,14 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
             #     variables in an expression are inferred at the same time.
             #     (And this is hard, also we need to be careful with lambdas that require
             #     two passes.)
+        ret_as_union = make_simplified_union([ret_type])
+        erased_ctx_as_union = make_simplified_union([ctx])
+        if isinstance(ret_as_union, UnionType) and isinstance(erased_ctx_as_union, UnionType):
+            new_ret = [val for val in ret_as_union.items if val not in erased_ctx_as_union.items]
+            new_ctx = [val for val in erased_ctx_as_union.items if val not in ret_as_union.items]
+            ret_type = make_simplified_union(new_ret)
+            erased_ctx = make_simplified_union(new_ctx)
+
         proper_ret = get_proper_type(ret_type)
         if (
             isinstance(proper_ret, TypeVarType)
@@ -2069,12 +2077,8 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
             # in this case external context is almost everything we have.
             if not is_generic_instance(ctx) and not is_literal_type_like(ctx):
                 return callable.copy_modified()
-
-        # GH#19304
-        # needs is_supertype=True since the purpose is to allow sound upcasting
-        # if the context requires it, such as e.g. `x: list[object] = [x for x in (1,2,3)]`
         args = infer_type_arguments(
-            callable.variables, ret_type, erased_ctx, is_supertype=True, skip_unsatisfied=True
+            callable.variables, ret_type, erased_ctx, skip_unsatisfied=True
         )
         # Only substitute non-Uninhabited and non-erased types.
         new_args: list[Type | None] = []

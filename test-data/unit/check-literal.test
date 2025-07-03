@@ -1206,6 +1206,13 @@ reveal_type(a)  # N: Revealed type is "builtins.dict[builtins.str, builtins.int]
 [builtins fixtures/dict.pyi]
 [out]
 
+[case testLiteralMappingContext]
+from typing import Mapping, Literal
+
+x: Mapping[str, Literal["sum", "mean", "max", "min"]] = {"x": "sum"}
+
+[builtins fixtures/dict.pyi]
+
 [case testLiteralInferredInOverloadContextBasic]
 from typing import Literal, overload
 
@@ -2945,6 +2952,30 @@ class C(B[Literal["word"]]):
 reveal_type(C().collection)  # N: Revealed type is "builtins.list[Literal['word']]"
 reveal_type(C().word)  # N: Revealed type is "Literal['word']"
 [builtins fixtures/tuple.pyi]
+
+[case testLiteralTernary]
+def test(b: bool) -> None:
+    l = 1 if b else "a"
+    reveal_type(l)  # N: Revealed type is "Union[builtins.int, builtins.str]"
+[builtins fixtures/tuple.pyi]
+
+[case testListLiteralTernary]
+def test(b: bool) -> None:
+    l = [1] if b else ["a"]
+    reveal_type(l)  # N: Revealed type is "Union[builtins.list[builtins.int], builtins.list[builtins.str]]"
+[builtins fixtures/list.pyi]
+
+[case testSetLiteralTernary]
+def test(b: bool) -> None:
+    s = {1} if b else {"a"}
+    reveal_type(s)  # N: Revealed type is "Union[builtins.set[builtins.int], builtins.set[builtins.str]]"
+[builtins fixtures/set.pyi]
+
+[case testDictLiteralTernary]
+def test(b: bool) -> None:
+    d = {1:1} if "" else {"a": "a"}
+    reveal_type(d)  # N: Revealed type is "Union[builtins.dict[builtins.int, builtins.int], builtins.dict[builtins.str, builtins.str]]"
+[builtins fixtures/dict.pyi]
 
 [case testLiteralTernaryUnionNarrowing]
 from typing import Literal, Optional

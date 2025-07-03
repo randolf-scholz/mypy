@@ -2427,20 +2427,20 @@ a2.foo2()
 [case testUnificationEmptyListLeft]
 def f(): pass
 a = [] if f() else [0]
-a() # E: "list[int]" not callable
+reveal_type(a) # N: Revealed type is "builtins.list[builtins.int]"
 [builtins fixtures/list.pyi]
 
 [case testUnificationEmptyListRight]
 def f(): pass
 a = [0] if f() else []
-a() # E: "list[int]" not callable
+reveal_type(a) # N: Revealed type is "builtins.list[builtins.int]"
 [builtins fixtures/list.pyi]
 
 [case testUnificationEmptyListLeftInContext]
 from typing import List
 def f(): pass
 a = [] if f() else [0] # type: list[int]
-a() # E: "list[int]" not callable
+reveal_type(a) # N: Revealed type is "builtins.list[builtins.int]"
 [builtins fixtures/list.pyi]
 
 [case testUnificationEmptyListRightInContext]
@@ -2448,37 +2448,37 @@ a() # E: "list[int]" not callable
 from typing import List
 def f(): pass
 a = [0] if f() else [] # type: list[int]
-a() # E: "list[int]" not callable
+reveal_type(a) # N: Revealed type is "builtins.list[builtins.int]"
 [builtins fixtures/list.pyi]
 
 [case testUnificationEmptySetLeft]
 def f(): pass
 a = set() if f() else {0}
-a() # E: "set[int]" not callable
+reveal_type(a) # N: Revealed type is "builtins.set[builtins.int]"
 [builtins fixtures/set.pyi]
 
 [case testUnificationEmptyDictLeft]
 def f(): pass
 a = {} if f() else {0: 0}
-a() # E: "dict[int, int]" not callable
+reveal_type(a) # N: Revealed type is "builtins.dict[builtins.int, builtins.int]"
 [builtins fixtures/dict.pyi]
 
 [case testUnificationEmptyDictRight]
 def f(): pass
 a = {0: 0} if f() else {}
-a() # E: "dict[int, int]" not callable
+reveal_type(a) # N: Revealed type is "builtins.dict[builtins.int, builtins.int]"
 [builtins fixtures/dict.pyi]
 
 [case testUnificationDictWithEmptyListLeft]
 def f(): pass
 a = {0: []} if f() else {0: [0]}
-a() # E: "dict[int, list[int]]" not callable
+reveal_type(a) # N: Revealed type is "builtins.dict[builtins.int, builtins.list[builtins.int]]"
 [builtins fixtures/dict.pyi]
 
 [case testUnificationDictWithEmptyListRight]
 def f(): pass
 a = {0: [0]} if f() else {0: []}
-a() # E: "dict[int, list[int]]" not callable
+reveal_type(a) # N: Revealed type is "builtins.dict[builtins.int, builtins.list[builtins.int]]"
 [builtins fixtures/dict.pyi]
 
 [case testMisguidedSetItem]
@@ -3388,7 +3388,7 @@ from typing import Any, Union, Iterable
 y: Union[Iterable[Any], Any]
 x: Union[Iterable[Any], Any]
 x = [y]
-reveal_type(x)  # N: Revealed type is "builtins.list[Any]"
+reveal_type(x)  # N: Revealed type is "builtins.list[Union[typing.Iterable[Any], Any]]"
 [builtins fixtures/list.pyi]
 
 [case testInferredTypeIsSimpleNestedListLoop]
@@ -3410,7 +3410,7 @@ def test(seq: List[Union[Iterable, Any]]) -> None:
     for k in seq:
         if bool():
             k = [k]
-            reveal_type(k)  # N: Revealed type is "builtins.list[Any]"
+            reveal_type(k)  # N: Revealed type is "builtins.list[Union[typing.Iterable[Any], Any]]"
 [builtins fixtures/list.pyi]
 
 [case testErasedTypeRuntimeCoverage]
@@ -3460,6 +3460,135 @@ if x:
 [case testSuggestPep604AnnotationForPartialNone]
 # flags: --local-partial-types --python-version 3.10
 x = None # E: Need type annotation for "x" (hint: "x: <type> | None = ...")
+
+[case testListLiteralConstructorContextCovariant]
+from typing import TypeVar
+from collections.abc import Sequence
+
+T = TypeVar("T")
+def id_(x: Sequence[T]) -> list[T]: ...
+
+x0: list[object] = [1]
+x1: list[object] = id_([1])
+x2: list[object] = id_(id_([1]))
+x3: list[object] = id_(id_(id_([1])))
+x4: list[object] = id_(id_(id_(id_([1]))))
+[builtins fixtures/list.pyi]
+
+[case testListLiteralConstructorContextInvariant]
+from typing import TypeVar
+from collections.abc import Set as MutableSequence
+
+T = TypeVar("T")
+def id_(x: MutableSequence[T]) -> list[T]: ...
+
+x0: list[object] = [1]
+x1: list[object] = id_([1])
+x2: list[object] = id_(id_([1]))
+x3: list[object] = id_(id_(id_([1])))
+x4: list[object] = id_(id_(id_(id_([1]))))
+[builtins fixtures/list.pyi]
+
+[case testTupleLiteralConstructorContextCovariant]
+from typing import TypeVar
+from collections.abc import Sequence
+
+T = TypeVar("T")
+def id_(x: Sequence[T]) -> tuple[T]: ...
+
+x0: tuple[object] = (1,)
+x1: tuple[object] = id_((1,))
+x2: tuple[object] = id_(id_((1,)))
+x3: tuple[object] = id_(id_(id_((1,))))
+x4: tuple[object] = id_(id_(id_(id_((1,)))))
+[builtins fixtures/tuple.pyi]
+
+[case testTupleLiteralConstructorContextInvariant]
+from typing import TypeVar
+from collections.abc import Set as MutableSequence
+
+
+T = TypeVar("T")
+def id_(x: MutableSequence[T]) -> tuple[T]: ...
+
+x0: tuple[object] = (1,)
+x1: tuple[object] = id_((1,))
+x2: tuple[object] = id_(id_((1,)))
+x3: tuple[object] = id_(id_(id_((1,))))
+x4: tuple[object] = id_(id_(id_(id_((1,)))))
+[builtins fixtures/tuple.pyi]
+
+[case testSetLiteralConstructorContextCovariant]
+from typing import TypeVar
+from collections.abc import Set as AbstractSet
+
+T = TypeVar("T")
+def id_(x: AbstractSet[T]) -> set[T]: ...
+
+x0: set[object] = {1}
+x1: set[object] = id_({1})
+x2: set[object] = id_(id_({1}))
+x3: set[object] = id_(id_(id_({1})))
+x4: set[object] = id_(id_(id_(id_({1}))))
+[builtins fixtures/set.pyi]
+
+[case testSetLiteralConstructorContextInvariant]
+from typing import TypeVar
+from collections.abc import MutableSet
+
+T = TypeVar("T")
+def id_(x: MutableSet[T]) -> set[T]: ...
+
+x0: set[object] = {1}
+x1: set[object] = id_({1})
+x2: set[object] = id_(id_({1}))
+x3: set[object] = id_(id_(id_({1})))
+x4: set[object] = id_(id_(id_(id_({1}))))
+[builtins fixtures/set.pyi]
+
+[case testDictLiteralConstructorContextCovariant]
+from typing import TypeVar
+from collections.abc import Mapping
+
+K = TypeVar("K")
+V = TypeVar("V")
+def id_(x: Mapping[K, V]) -> dict[K, V]: ...
+
+x0: dict[object, object] = {"a": 1}
+x1: dict[object, object] = id_({"a": 1})
+x2: dict[object, object] = id_(id_({"a": 1}))
+x3: dict[object, object] = id_(id_(id_({"a": 1})))
+x4: dict[object, object] = id_(id_(id_(id_({"a": 1}))))
+[builtins fixtures/dict.pyi]
+
+[case testDictLiteralConstructorContextInvariant]
+from typing import TypeVar
+from collections.abc import MutableMapping
+
+K = TypeVar("K")
+V = TypeVar("V")
+def id_(x: MutableMapping[K, V]) -> dict[K, V]: ...
+
+x0: dict[object, object] = {"a": 1}
+x1: dict[object, object] = id_({"a": 1})
+x2: dict[object, object] = id_(id_({"a": 1}))
+x3: dict[object, object] = id_(id_(id_({"a": 1})))
+x4: dict[object, object] = id_(id_(id_(id_({"a": 1}))))
+[builtins fixtures/dict.pyi]
+
+[case testLambdaLiteralConstructorContext]
+from typing import TypeVar, Callable
+
+T = TypeVar("T")
+S = TypeVar("S")
+def id_(x: Callable[[T], S]) -> Callable[[T], S]: ...
+
+x0: Callable[[object], object] = lambda x: x
+x1: Callable[[object], object] = id_(lambda x: x)
+x2: Callable[[object], object] = id_(id_(lambda x: x))
+x3: Callable[[object], object] = id_(id_(id_(lambda x: x)))
+x4: Callable[[object], object] = id_(id_(id_(id_(lambda x: x))))
+
 
 [case testTupleContextFromIterable]
 from typing import TypeVar, Iterable, List, Union

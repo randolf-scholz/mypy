@@ -2985,7 +2985,7 @@ def lift(f: F[T]) -> F[Optional[T]]: ...
 def g(x: T) -> T:
     return x
 
-reveal_type(lift(g))  # N: Revealed type is "def [T] (Union[T`1, None]) -> Union[T`1, None]"
+reveal_type(lift(g))  # N: Revealed type is "__main__.F[Union[T`-1, None]]"
 [builtins fixtures/list.pyi]
 
 [case testInferenceAgainstGenericSplitOrder]

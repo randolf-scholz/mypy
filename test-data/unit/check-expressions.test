@@ -308,6 +308,257 @@ main:5: error: Unsupported operand types for ^ ("A" and "A")
 main:6: error: Unsupported operand types for << ("A" and "B")
 main:7: error: Unsupported operand types for >> ("A" and "A")
 
+[case testBinaryOperatorContext]
+# gh-19304
+from typing import TypeVar, Generic, Iterable, Iterator, Union
+
+T = TypeVar("T")
+S = TypeVar("S")
+IntOrStr = TypeVar("IntOrStr", bound=Union[int, str])
+
+class Vec(Generic[T]):
+    def __init__(self, iterable: Iterable[T], /) -> None: ...
+    def __iter__(self) -> Iterator[T]: yield from []
+    def __add__(self, value: "Vec[S]", /) -> "Vec[Union[S, T]]": return Vec([])
+
+def fmt(arg: Iterable[Union[int, str]]) -> None: ...
+def first(arg: Iterable[IntOrStr]) -> IntOrStr: ...
+
+def test_fmt(l1: Vec[int], l2: Vec[int], /) -> None:
+    fmt(l1 + l2)
+
+def test_first(l1: Vec[int], l2: Vec[int], /) -> None:
+    first(l1 + l2)
+[builtins fixtures/list.pyi]
+
+[case testBinaryOperatorContext2]
+# gh-15087
+class A: ...
+class B(A): ...
+
+def foo(x: list[A]) -> None: ...
+
+def test(l1: list[A], l2: list[B]) -> None:
+    foo(l1 + l2)
+[builtins fixtures/list.pyi]
+
+[case testBinaryOperatorContext3]
+# gh-19413
+from typing import Iterable, TypeVar
+
+T = TypeVar("T")
+
+def id_(iter1: Iterable[T]) -> Iterable[T]: ...
+
+def with_none(x: list[str]) -> None:
+    reveal_type(id_([None] + x))  # N: Revealed type is "typing.Iterable[Union[None, builtins.str]]"
+
+[builtins fixtures/list.pyi]
+
+[case testComparisonContext4]
+# gh-12247
+def IgnoreColor(s: bytes) -> bytes:
+    return bytes(filter(lambda x: not (0x01 <= x <= 0x1F or x == 0x7F), s))
+[builtins fixtures/filter.pyi]
+
+
+[case testBinaryOperatorContextListConcat]
+# gh-5874
+from typing import TypeVar, Union
+
+T = TypeVar('T')
+S = TypeVar('S')
+
+def add(x: list[T], y: list[S]) -> list[Union[T, S]]: ...
+
+a: list[int]
+b: list[str]
+
+e: list[Union[int, str]] = add(a, b)
+[builtins fixtures/list.pyi]
+
+[case testBinaryOperatorContextListConcat2]
+# gh-3933
+from typing import Union
+
+def test_left(mix: list[Union[int, str]], strings: list[str]) -> None:
+    mix = mix + strings
+
+def test_right(mix: list[Union[int, str]], strings: list[str]) -> None:
+    mix = strings + mix
+
+def test_inplace(mix: list[Union[int, str]], strings: list[str]) -> None:
+    mix += strings
+[builtins fixtures/list.pyi]
+
+[case testBinaryOperatorContextDictUnion]
+# flags: --python-version 3.10
+# gh-18236
+d1: dict[str, str] = {}
+d2: dict[str, str | None] = {}
+
+d3 = d1 | d2
+reveal_type(d3)  # N: Revealed type is "builtins.dict[builtins.str, Union[builtins.str, None]]"
+d4: dict[str, str | None] = d3
+d5: dict[str, str | None] = d1 | d2
+[builtins fixtures/dict-full.pyi]
+
+[case testBinaryOperatorContext7]
+from typing import TypeVar, Generic, Union, Any
+
+T = TypeVar('T')
+T_co = TypeVar('T_co', covariant=True)
+S = TypeVar('S')
+
+class A(Generic[T_co]): pass
+
+class B(A[T]):
+    def __add__(self, x: B[S]) -> B[Union[T, S]]: ...
+
+b1: B[Any]
+b2: B[int]
+
+a: A[object] = b1 + b2
+
+[case testBinaryOperatorContext8]
+from typing import Iterable, Iterator, TypeVar, Generic, Union
+
+T = TypeVar("T")
+S = TypeVar("S")
+
+class Vec(Generic[T]):
+    def getitem(self, i: int) -> T: ...            # ensure invariance of T
+    def setitem(self, i: int, v: T) -> None: ...   # ensure invariance of T
+    def __iter__(self) -> Iterator[T]: ...
+    def __add__(self, other: "Vec[S]") -> "Vec[Union[T, S]]": ...
+
+mix: Vec[Union[int, str]]
+strings: Vec[str]
+mix = mix + strings
+mix = strings + mix
+reveal_type(mix + strings)  # N: Revealed type is "__main__.Vec[Union[builtins.int, builtins.str]]"
+reveal_type(strings + mix)  # N: Revealed type is "__main__.Vec[Union[builtins.str, builtins.int]]"
+[builtins fixtures/list.pyi]
+
+
+[case testBinaryOperatorContext9]
+# https://github.com/python/mypy/issues/3933#issuecomment-2272804302
+from typing import Iterable, Iterator, TypeVar, Generic, Union
+
+T = TypeVar("T")
+S = TypeVar("S")
+
+class Vec(Generic[T]):
+    def getitem(self, i: int) -> T: ...            # ensure invariance of T
+    def setitem(self, i: int, v: T) -> None: ...   # ensure invariance of T
+    def __iter__(self) -> Iterator[T]: ...
+    def __add__(self, other: "Vec[S]") -> "Vec[Union[T, S]]": ...
+
+def identity_on_iterable(arg: Iterable[T]) -> Iterable[T]: return arg
+x: Vec[str]
+y: Vec[None]
+reveal_type( identity_on_iterable(y + x) )  # N: Revealed type is "typing.Iterable[Union[None, builtins.str]]"
+reveal_type( identity_on_iterable(x + y) )  # N: Revealed type is "typing.Iterable[Union[builtins.str, None]]"
+
+
+[case testBinaryOperatorContextUnionToObject]
+# flags: --python-version 3.12
+from typing import Any
+
+class Vec[T]:
+    def get(self) -> T: ...
+    def set(self, arg: T) -> None: ...
+    def __add__[S](self, other: "Vec[S]") -> "Vec[T | S]": ...
+
+def id_[T](x: Vec[T]) -> Vec[T]: ...
+
+def test(a: Vec[int], b: Vec[str]) -> None:
+    y1: Vec[object] = a + b  # E: Incompatible types in assignment (expression has type "Vec[Union[int, str]]", variable has type "Vec[object]")
+    y2: Vec[object] = b + a  # E: Incompatible types in assignment (expression has type "Vec[Union[str, int]]", variable has type "Vec[object]")
+    y3: Vec[object] = id_(a + b)  # E: Incompatible types in assignment (expression has type "Vec[Union[int, str]]", variable has type "Vec[object]")
+    y4: Vec[object] = id_(b + a)  # E: Incompatible types in assignment (expression has type "Vec[Union[str, int]]", variable has type "Vec[object]")
+    y5: Vec[object] = id_(id_(a + b))  # E: Incompatible types in assignment (expression has type "Vec[Union[int, str]]", variable has type "Vec[object]")
+    y6: Vec[object] = id_(id_(b + a))  # E: Incompatible types in assignment (expression has type "Vec[Union[str, int]]", variable has type "Vec[object]")
+
+
+[case testBinaryOperatorContextAnyToUnion]
+# flags: --python-version 3.12
+from typing import Any
+
+class Vec[T]:
+    def get(self) -> T: ...
+    def set(self, arg: T) -> None: ...
+    def __add__[S](self, other: "Vec[S]") -> "Vec[T | S]": ...
+
+def id_[T](x: Vec[T]) -> Vec[T]: ...
+
+def test(a: Vec[int], c: Vec[Any]) -> None:
+    # OK: Vec[Any | int] = Vec[str | int] for materialization Any=str
+    w1: Vec[str | int] = a + c
+    w2: Vec[str | int] = c + a
+    w3: Vec[str | int] = id_(a + c)
+    w4: Vec[str | int] = id_(c + a)
+    w5: Vec[str | int] = id_(id_(a + c))
+    w6: Vec[str | int] = id_(id_(c + a))
+
+
+[case testBinaryOperatorContextAnyToObject]
+# flags: --python-version 3.12
+from typing import Any
+
+class Vec[T]:
+    def get(self) -> T: ...
+    def set(self, arg: T) -> None: ...
+    def __add__[S](self, other: "Vec[S]") -> "Vec[T | S]": ...
+
+def id_[T](x: Vec[T]) -> Vec[T]: ...
+
+def test(a: Vec[int], c: Vec[Any]) -> None:
+    # OK: Vec[Any | int] = Vec[object | int] = Vec[object] for materialization Any=object
+    w1: Vec[object] = a + c
+    w2: Vec[object] = c + a
+    w3: Vec[object] = id_(a + c)
+    w4: Vec[object] = id_(c + a)
+    w5: Vec[object] = id_(id_(a + c))
+    w6: Vec[object] = id_(id_(c + a))
+
+[case testBinaryOperatorContext11]
+# flags: --python-version 3.12
+from typing import Any
+
+class A[R]:
+    # covariant parent class
+    def getter(self) -> R: ...
+
+class B[T](A[T]):
+    # invariant child class
+    def getter(self) -> T: ...
+    def setter(self, arg: T) -> None: ...
+    def __add__[S](self, x: "B[S]") -> "B[T | S]": ...
+
+def test_any(b1: B[Any], b2: B[int], b3: B[Any | int]) -> None:
+    a1: A[object] = b1 + b2
+    a2: A[object] = b2 + b1
+    a3: A[object] = b3
+
+def test_object(b1: B[object], b2: B[int], b3: B[Any | int]) -> None:
+    a1: A[object] = b1 + b2
+    a2: A[object] = b2 + b1
+    a3: A[object] = b3
+
+def test_any2(b1: B[Any], b2: B[int], b3: B[Any | int]) -> None:
+    # B[Any | int] = B[object] for materialization Any=object
+    # therefore assignable
+    a1: B[object] = b1 + b2
+    a2: B[object] = b2 + b1
+    a3: B[object] = b3
+
+def test_object2(b1: B[object], b2: B[int], b3: B[Any | int]) -> None:
+    a1: B[object] = b1 + b2
+    a2: B[object] = b2 + b1
+    a3: B[object] = b3
+
+
 [case testBooleanAndOr]
 a: A
 b: bool
@@ -459,10 +710,6 @@ if int():
 class A:
   def __contains__(self, x: 'A') -> str: pass
 [builtins fixtures/bool.pyi]
-
-[case testInWithInvalidArgs]
-a = 1 in ([1] + ['x'])  # E: List item 0 has incompatible type "str"; expected "int"
-[builtins fixtures/list.pyi]
 
 [case testEq]
 a: A

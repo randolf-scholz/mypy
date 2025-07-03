@@ -1139,6 +1139,7 @@ class TypeMeetVisitor(TypeVisitor[ProperType]):
 
 
 def meet_similar_callables(t: CallableType, s: CallableType) -> CallableType:
+    # meet(X₁ -> Y₁, X₂ -> Y₂) = join(X₁, X₂) -> meet(Y₁, Y₂)
     from mypy.join import match_generic_callables, safe_join
 
     t, s = match_generic_callables(t, s)

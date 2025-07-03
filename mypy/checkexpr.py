@@ -1791,161 +1791,46 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                 isinstance(v, (ParamSpecType, TypeVarTupleType)) for v in callee.variables
             )
             callee = freshen_function_type_vars(callee)
-
-            # first, check if the arguments can be assigned, ignoring the context.
-            # If this already produces errors, we ignore the context.
-
-            # region infer context free
-            CONTEXT_FREE_CALLEE = callee
-            CTX_FREE_FORMAL_TO_ACTUAL = formal_to_actual
-
-            CONTEXT_FREE_CALLEE = self.infer_function_type_arguments(
-                CONTEXT_FREE_CALLEE,
-                args,
-                arg_kinds,
-                arg_names,
-                CTX_FREE_FORMAL_TO_ACTUAL,
-                need_refresh,
-                context,
-            )
-            if need_refresh:
-                CTX_FREE_FORMAL_TO_ACTUAL = map_actuals_to_formals(
-                    arg_kinds,
-                    arg_names,
-                    CONTEXT_FREE_CALLEE.arg_kinds,
-                    CONTEXT_FREE_CALLEE.arg_names,
-                    lambda i: self.accept(args[i]),
-                )
-
-            #  do the context stuff still, but only after....
-            new_args = self.infer_function_type_arguments_using_context(
-                CONTEXT_FREE_CALLEE, context
-            )
-            CONTEXT_FREE_CALLEE = self.apply_generic_arguments(
-                CONTEXT_FREE_CALLEE, new_args, context, skip_unsatisfied=True
-            )
-
+            callee = self.infer_function_type_arguments_using_context(callee, context)
             if need_refresh:
                 # Argument kinds etc. may have changed due to
                 # ParamSpec or TypeVarTuple variables being replaced with an arbitrary
                 # number of arguments; recalculate actual-to-formal map
-                CTX_FREE_FORMAL_TO_ACTUAL = map_actuals_to_formals(
+                formal_to_actual = map_actuals_to_formals(
                     arg_kinds,
                     arg_names,
-                    CONTEXT_FREE_CALLEE.arg_kinds,
-                    CONTEXT_FREE_CALLEE.arg_names,
+                    callee.arg_kinds,
+                    callee.arg_names,
+                    lambda i: self.accept(args[i]),
+                )
+            callee = self.infer_function_type_arguments(
+                callee, args, arg_kinds, arg_names, formal_to_actual, need_refresh, context
+            )
+            if need_refresh:
+                formal_to_actual = map_actuals_to_formals(
+                    arg_kinds,
+                    arg_names,
+                    callee.arg_kinds,
+                    callee.arg_names,
                     lambda i: self.accept(args[i]),
                 )
 
-            CTX_FREE_ARG_TYPES = self.infer_arg_types_in_context(
-                CONTEXT_FREE_CALLEE, args, arg_kinds, CTX_FREE_FORMAL_TO_ACTUAL
-            )
-            CONTEXT_FREE_ERRORS = self.check_argument_types(
-                CTX_FREE_ARG_TYPES,
-                arg_kinds,
-                args,
-                CONTEXT_FREE_CALLEE,
-                CTX_FREE_FORMAL_TO_ACTUAL,
-                context,
-                object_type=object_type,
-            )
+        arg_types = self.infer_arg_types_in_context(callee, args, arg_kinds, formal_to_actual)
 
-            try:
-                first_context_free_error = next(CONTEXT_FREE_ERRORS)
-            except StopIteration:
-                first_context_free_error = None
+        self.check_argument_count(
+            callee,
+            arg_types,
+            arg_kinds,
+            arg_names,
+            formal_to_actual,
+            context,
+            object_type,
+            callable_name,
+        )
 
-            # detected context free errors.
-            if first_context_free_error is None:
-                pass
-                # first_context_free_error()
-                # for emitter in CONTEXT_FREE_ERRORS:
-                #     emitter()
-
-            # otherwise, proceed with context-aware inference
-            if True:
-                # infer using context
-                new_args = self.infer_function_type_arguments_using_context(callee, context)
-                callee = self.apply_generic_arguments(
-                    callee, new_args, context, skip_unsatisfied=True
-                )
-
-                if need_refresh:
-                    # Argument kinds etc. may have changed due to
-                    # ParamSpec or TypeVarTuple variables being replaced with an arbitrary
-                    # number of arguments; recalculate actual-to-formal map
-                    formal_to_actual = map_actuals_to_formals(
-                        arg_kinds,
-                        arg_names,
-                        callee.arg_kinds,
-                        callee.arg_names,
-                        lambda i: self.accept(args[i]),
-                    )
-                callee = self.infer_function_type_arguments(
-                    callee, args, arg_kinds, arg_names, formal_to_actual, need_refresh, context
-                )
-                if need_refresh:
-                    formal_to_actual = map_actuals_to_formals(
-                        arg_kinds,
-                        arg_names,
-                        callee.arg_kinds,
-                        callee.arg_names,
-                        lambda i: self.accept(args[i]),
-                    )
-
-                arg_types = self.infer_arg_types_in_context(
-                    callee, args, arg_kinds, formal_to_actual
-                )
-
-                self.check_argument_count(
-                    callee,
-                    arg_types,
-                    arg_kinds,
-                    arg_names,
-                    formal_to_actual,
-                    context,
-                    object_type,
-                    callable_name,
-                )
-
-                ACTUAL_ERRORS = self.check_argument_types(
-                    arg_types,
-                    arg_kinds,
-                    args,
-                    callee,
-                    formal_to_actual,
-                    context,
-                    object_type=object_type,
-                )
-
-                for emitter in ACTUAL_ERRORS:
-                    emitter()
-
-        else:
-            arg_types = self.infer_arg_types_in_context(callee, args, arg_kinds, formal_to_actual)
-
-            self.check_argument_count(
-                callee,
-                arg_types,
-                arg_kinds,
-                arg_names,
-                formal_to_actual,
-                context,
-                object_type,
-                callable_name,
-            )
-
-            emitters = self.check_argument_types(
-                arg_types,
-                arg_kinds,
-                args,
-                callee,
-                formal_to_actual,
-                context,
-                object_type=object_type,
-            )
-            for emitter in emitters:
-                emitter()
+        self.check_argument_types(
+            arg_types, arg_kinds, args, callee, formal_to_actual, context, object_type=object_type
+        )
 
         if (
             callee.is_type_obj()
@@ -2116,8 +2001,8 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
         return cast(list[Type], res)
 
     def infer_function_type_arguments_using_context(
-        self, fn: CallableType, error_context: Context
-    ) -> list[Type | None]:
+        self, callable: CallableType, error_context: Context
+    ) -> CallableType:
         """Unify callable return type to type context to infer type vars.
 
         For example, if the return type is set[t] where 't' is a type variable
@@ -2126,15 +2011,14 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
         """
         ctx = self.type_context[-1]
         if not ctx:
-            return [None] * len(fn.variables)
-            return fn
+            return callable
         # The return type may have references to type metavariables that
         # we are inferring right now. We must consider them as indeterminate
         # and they are not potential results; thus we replace them with the
         # special ErasedType type. On the other hand, class type variables are
         # valid results.
         erased_ctx = replace_meta_vars(ctx, ErasedType())
-        ret_type = fn.ret_type
+        ret_type = callable.ret_type
         if is_overlapping_none(ret_type) and is_overlapping_none(ctx):
             # If both the context and the return type are optional, unwrap the optional,
             # since in 99% cases this is what a user expects. In other words, we replace
@@ -2192,9 +2076,10 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
             # TODO: we may want to add similar exception if all arguments are lambdas, since
             # in this case external context is almost everything we have.
             if not is_generic_instance(ctx) and not is_literal_type_like(ctx):
-                return [None] * len(fn.variables)
-                return fn.copy_modified()
-        args = infer_type_arguments(fn.variables, ret_type, erased_ctx, skip_unsatisfied=True)
+                return callable.copy_modified()
+        args = infer_type_arguments(
+            callable.variables, ret_type, erased_ctx, skip_unsatisfied=True
+        )
         # Only substitute non-Uninhabited and non-erased types.
         new_args: list[Type | None] = []
         for arg in args:
@@ -2202,11 +2087,11 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                 new_args.append(None)
             else:
                 new_args.append(arg)
-
         # Don't show errors after we have only used the outer context for inference.
         # We will use argument context to infer more variables.
-        return new_args
-        return self.apply_generic_arguments(fn, new_args, error_context, skip_unsatisfied=True)
+        return self.apply_generic_arguments(
+            callable, new_args, error_context, skip_unsatisfied=True
+        )
 
     def infer_function_type_arguments(
         self,
@@ -2642,7 +2527,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
         context: Context,
         check_arg: ArgChecker | None = None,
         object_type: Type | None = None,
-    ) -> Iterator[Callable[[], None]]:  # Lazy[Error]
+    ) -> None:
         """Check argument types against a callable type.
 
         Report errors if the argument types are not compatible.
@@ -2650,19 +2535,18 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
         The check_call docstring describes some of the arguments.
         """
         check_arg = check_arg or self.check_arg
-        assert check_arg is not None
         # Keep track of consumed tuple *arg items.
         mapper = ArgTypeExpander(self.argument_infer_context())
 
         for arg_type, arg_kind in zip(arg_types, arg_kinds):
             arg_type = get_proper_type(arg_type)
             if arg_kind == nodes.ARG_STAR and not self.is_valid_var_arg(arg_type):
-                yield lambda: self.msg.invalid_var_arg(arg_type, context)
+                self.msg.invalid_var_arg(arg_type, context)
             if arg_kind == nodes.ARG_STAR2 and not self.is_valid_keyword_var_arg(arg_type):
                 is_mapping = is_subtype(
                     arg_type, self.chk.named_type("_typeshed.SupportsKeysAndGetItem")
                 )
-                yield lambda: self.msg.invalid_keyword_var_arg(arg_type, is_mapping, context)
+                self.msg.invalid_keyword_var_arg(arg_type, is_mapping, context)
 
         for i, actuals in enumerate(formal_to_actual):
             orig_callee_arg_type = get_proper_type(callee.arg_types[i])
@@ -2761,7 +2645,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                     callee_arg_kind,
                     allow_unpack=isinstance(callee_arg_type, UnpackType),
                 )
-                yield from check_arg(
+                check_arg(
                     expanded_actual,
                     actual_type,
                     actual_kind,
@@ -2786,42 +2670,38 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
         object_type: Type | None,
         context: Context,
         outer_context: Context,
-    ) -> Iterator[Callable[[], None]]:  # Lazy[Error]
+    ) -> None:
         """Check the type of a single argument in a call."""
         caller_type = get_proper_type(caller_type)
         original_caller_type = get_proper_type(original_caller_type)
         callee_type = get_proper_type(callee_type)
 
         if isinstance(caller_type, DeletedType):
-            yield lambda: self.msg.deleted_as_rvalue(caller_type, context)
+            self.msg.deleted_as_rvalue(caller_type, context)
         # Only non-abstract non-protocol class can be given where Type[...] is expected...
         elif self.has_abstract_type_part(caller_type, callee_type):
-            yield lambda: self.msg.concrete_only_call(callee_type, context)
+            self.msg.concrete_only_call(callee_type, context)
         elif not is_subtype(caller_type, callee_type, options=self.chk.options):
-
-            def _emit_incompatible_args() -> None:
-                error = self.msg.incompatible_argument(
-                    n,
-                    m,
-                    callee,
-                    original_caller_type,
-                    caller_kind,
-                    object_type=object_type,
-                    context=context,
-                    outer_context=outer_context,
+            error = self.msg.incompatible_argument(
+                n,
+                m,
+                callee,
+                original_caller_type,
+                caller_kind,
+                object_type=object_type,
+                context=context,
+                outer_context=outer_context,
+            )
+            if not caller_kind.is_star():
+                # For *args and **kwargs this note would be incorrect - we're comparing
+                # iterable/mapping type with union of relevant arg types.
+                self.msg.incompatible_argument_note(
+                    original_caller_type, callee_type, context, parent_error=error
                 )
-                if not caller_kind.is_star():
-                    # For *args and **kwargs this note would be incorrect - we're comparing
-                    # iterable/mapping type with union of relevant arg types.
-                    self.msg.incompatible_argument_note(
-                        original_caller_type, callee_type, context, parent_error=error
-                    )
-                if not self.msg.prefer_simple_messages():
-                    self.chk.check_possible_missing_await(
-                        caller_type, callee_type, context, error.code
-                    )
-
-            yield _emit_incompatible_args
+            if not self.msg.prefer_simple_messages():
+                self.chk.check_possible_missing_await(
+                    caller_type, callee_type, context, error.code
+                )
 
     def check_overload_call(
         self,
@@ -3399,10 +3279,9 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                 # No match -- exit early since none of the remaining work can change
                 # the result.
                 raise Finished
-            yield from ()
 
         try:
-            emitters = self.check_argument_types(
+            self.check_argument_types(
                 arg_types,
                 arg_kinds,
                 args,
@@ -3411,8 +3290,6 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                 context=context,
                 check_arg=check_arg,
             )
-            for emitter in emitters:
-                emitter()
             return True
         except Finished:
             return False

@@ -1769,6 +1769,23 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
             freeze_all_type_vars(fresh_ret_type)
             callee = callee.copy_modified(ret_type=fresh_ret_type)
 
+        param_spec = callee.param_spec()
+        if (
+            param_spec is not None
+            and arg_kinds == [ARG_STAR, ARG_STAR2]
+            and len(formal_to_actual) == 2
+        ):
+            arg1 = self.accept(args[0])
+            arg2 = self.accept(args[1])
+            if (
+                isinstance(arg1, ParamSpecType)
+                and isinstance(arg2, ParamSpecType)
+                and arg1.flavor == ParamSpecFlavor.ARGS
+                and arg2.flavor == ParamSpecFlavor.KWARGS
+                and arg1.id == arg2.id == param_spec.id
+            ):
+                return callee.ret_type, callee
+
         if callee.is_generic():
             need_refresh = any(
                 isinstance(v, (ParamSpecType, TypeVarTupleType)) for v in callee.variables
@@ -1797,23 +1814,6 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                     callee.arg_names,
                     lambda i: self.accept(args[i]),
                 )
-
-        param_spec = callee.param_spec()
-        if (
-            param_spec is not None
-            and arg_kinds == [ARG_STAR, ARG_STAR2]
-            and len(formal_to_actual) == 2
-        ):
-            arg1 = self.accept(args[0])
-            arg2 = self.accept(args[1])
-            if (
-                isinstance(arg1, ParamSpecType)
-                and isinstance(arg2, ParamSpecType)
-                and arg1.flavor == ParamSpecFlavor.ARGS
-                and arg2.flavor == ParamSpecFlavor.KWARGS
-                and arg1.id == arg2.id == param_spec.id
-            ):
-                return callee.ret_type, callee
 
         arg_types = self.infer_arg_types_in_context(callee, args, arg_kinds, formal_to_actual)
 

@@ -8,12 +8,13 @@ from typing import NamedTuple
 from mypy.constraints import (
     SUBTYPE_OF,
     SUPERTYPE_OF,
+    Constraint,
     infer_constraints,
     infer_constraints_for_callable,
 )
 from mypy.nodes import ArgKind
 from mypy.solve import solve_constraints
-from mypy.types import CallableType, Instance, Type, TypeVarLikeType
+from mypy.types import CallableType, Instance, Type, TypeVarLikeType, UninhabitedType
 
 
 class ArgumentInferContext(NamedTuple):
@@ -73,4 +74,8 @@ def infer_type_arguments(
     # Like infer_function_type_arguments, but only match a single type
     # against a generic type.
     constraints = infer_constraints(template, actual, SUPERTYPE_OF if is_supertype else SUBTYPE_OF)
+
+    for tp in type_vars:
+        constraints.append(Constraint(tp, SUPERTYPE_OF, UninhabitedType()))
+
     return solve_constraints(type_vars, constraints, skip_unsatisfied=skip_unsatisfied)[0]

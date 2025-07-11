@@ -2113,6 +2113,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
             ]
 
             outer_solution = (outer_args, _outer_solution[1])
+
             outer_callee = self.apply_generic_arguments(
                 callee_type, outer_solution[0], context, skip_unsatisfied=True
             )
@@ -2182,13 +2183,15 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                 joint_solution = (joint_args, _joint_solution[1])
                 # joint_solution = _joint_solution
                 joint_callee = self.apply_generic_arguments(
-                    callee_type, joint_solution[0], context, skip_unsatisfied=False
+                    callee_type, joint_solution[0], context, skip_unsatisfied=True
                 )
                 joint_ret_type = get_proper_type(joint_callee.ret_type)
 
                 if (  # determine which solution to take
-                    # not outer_constraints
-                    not joint_solution[0]
+                    # no inner constraints
+                    not inner_constraints
+                    # no outer_constraints
+                    or not joint_solution[0]
                     # joint constraints failed to produce a complete solution
                     or None in joint_solution[0]
                     # If the outer solution is more concrete than the joint solution, prefer the outer solution.

@@ -315,6 +315,8 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
     msg: MessageBuilder
     # Type context for type inference
     type_context: list[Type | None]
+    # constraints for the type context, used for type inference
+    constraint_context: list[list[Constraint]]
 
     # cache resolved types in some cases
     resolved_type: dict[Expression, ProperType]
@@ -341,6 +343,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
         # time for nested expressions.
         self.in_expression = False
         self.type_context = [None]
+        self.constraint_context = [[]]
 
         # Temporary overrides for expression types. This is currently
         # used by the union math in overloads.
@@ -1963,6 +1966,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
         args: list[Expression],
         arg_kinds: list[ArgKind],
         formal_to_actual: list[list[int]],
+        context: list[Constraint] | None = None,
     ) -> list[Type]:
         """Infer argument expression types using a callable type as context.
 
@@ -1983,7 +1987,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                     # cases. A cleaner alternative would be to switch to single bin type
                     # inference, but this is a lot of work.
                     old = self.infer_more_unions_for_recursive_type(arg_type)
-                    res[ai] = self.accept(args[ai], arg_type)
+                    res[ai] = self.accept(args[ai], arg_type, context=context)
                     # We need to manually restore union inference state, ugh.
                     type_state.infer_unions = old
 
@@ -2072,7 +2076,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
         upper_constraints = infer_constraints(proper_ret, erased_ctx, SUBTYPE_OF)
         lower_constraints = infer_constraints(proper_ret, erased_ctx, SUPERTYPE_OF)
         # we must match the context exactly; not just subtype it.
-        return lower_constraints, upper_constraints
+        return upper_constraints, lower_constraints
 
         # constraints = infer_constraints(proper_ret, erased_ctx, SUBTYPE_OF)
         # return constraints
@@ -2095,12 +2099,45 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
         """
 
         if self.chk.in_checked_function():
+
+            # 1. def [KT, VT] (tuple[KT`499, VT`500]) -> builtins.dict[KT`499, VT`500]
+            #    with ctx=[
+            #       None,
+            #       builtins.dict[builtins.str, TypedDict('tmp_b.OverridesItem', {'tp': tmp_b.A})]
+            #    ]
+            #   =>>>> here we should infer outer_callee:
+            #       def (tuple[builtins.str, TypedDict('tmp_b.OverridesItem', {'tp': tmp_b.A})])
+            #           -> builtins.dict[builtins.str, TypedDict('tmp_b.OverridesItem', {'tp': tmp_b.A})]
+            #   =>>>> in the nested call, upcasting B to A is fine.
+            #
+            # 2. def [T] (*, tp: T`501) -> TypedDict('tmp_b.OverridesItem', {'tp': T`501})
+            #    with ctx=[
+            #       None,
+            #       builtins.dict[builtins.str, TypedDict('tmp_b.OverridesItem', {'tp': tmp_b.A})],
+            #       tuple[KT`499, VT`500],
+            #       VT`500
+            #   ]
+            #   with arg_types=[def () -> tmp_b.B]
+            # 3. def [T] (*, tp: T`502) -> TypedDict('tmp_b.OverridesItem', {'tp': T`502})
+            #    with ctx=[
+            #       None,
+            #       builtins.dict[builtins.str, TypedDict('tmp_b.OverridesItem', {'tp': tmp_b.A})],
+            #       tuple[builtins.str, TypedDict('tmp_b.OverridesItem', {'tp': tmp_b.A})],
+            #       TypedDict('tmp_b.OverridesItem', {'tp': tmp_b.A})
+            #   ]
+            #   with arg_types=[def () -> tmp_b.B]
+
+            # vector example:
+            #  1. def [S] (tmp_a.Vec[S`593]) -> tmp_a.Vec[S`593 | builtins.int]
+            #     with ctx=[None, None, typing.Iterable[builtins.int | builtins.str]]
+            #     outer: Vec[int | str] -> Vec[int | str]
+            #     joint: Vec[int] -> Vec[int]
+
             outer_ctx = list(self.type_context)
             # compute the outer solution
-            lower_constraints, upper_constraints = self.infer_constraints_from_context(
-                callee_type, context
-            )
-            outer_constraints = upper_constraints  # order matters!
+            outer_upper, outer_lower = self.infer_constraints_from_context(callee_type, context)
+            # outer_upper, outer_lower = get_upper_and_lower(outer_upper + outer_lower)
+            outer_constraints = outer_upper  # order matters!
             _outer_solution = solve_constraints(
                 callee_type.variables,
                 outer_constraints,
@@ -2119,13 +2156,25 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
             )
             outer_ret_type = get_proper_type(outer_callee.ret_type)
 
+            # outer_formal_to_actual = map_actuals_to_formals(
+            #     arg_kinds,
+            #     arg_names,
+            #     outer_callee.arg_kinds,
+            #     outer_callee.arg_names,
+            #     lambda i: self.accept(args[i]),
+            # )
+
+            context_constrains = []
+            for cons in self.constraint_context:
+                context_constrains.extend(cons)
+
             # Disable type errors during type inference. There may be errors
             # due to partial available context information at this time, but
             # these errors can be safely ignored as the arguments will be
             # inferred again later.
             with self.msg.filter_errors():
                 arg_types = self.infer_arg_types_in_context(
-                    callee_type, args, arg_kinds, formal_to_actual
+                    callee_type, args, arg_kinds, formal_to_actual, context=outer_constraints
                 )
 
             arg_pass_nums = self.get_arg_infer_passes(
@@ -2164,12 +2213,15 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                             ),
                         )
                     )
+                inner_upper, inner_lower = get_upper_and_lower(_inner_constraints)
+                # inner_constraints = inner_upper + inner_lower # only use upper constraints
+                # inner_constraints = inner_upper  # only use upper constraints
 
                 # compute the joint solution using both inner and outer constraints.
                 # NOTE: The order of constraints is important here!
                 #  solve(outer + inner) and solve(inner + outer) may yield different results.
                 #  we need to use outer first.
-                joint_constraints = inner_constraints + upper_constraints
+                joint_constraints = outer_upper + inner_constraints
                 _joint_solution = solve_constraints(
                     callee_type.variables,
                     joint_constraints,
@@ -2205,14 +2257,19 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                 else:
                     use_joint = True
 
+                _vars = callee_type.variables
                 _ctx = self.type_context
                 _outer_ctx = outer_ctx
+
                 _c0 = callee_type
                 _o0 = outer_callee
                 _j0 = joint_callee
 
-                _u1 = upper_constraints
-                _l1 = lower_constraints
+                _u1 = outer_upper
+                _l1 = outer_lower
+                _i0 = inner_upper
+                _i1 = inner_lower
+
                 _o1 = outer_constraints
                 _i1 = inner_constraints
                 _j1 = joint_constraints
@@ -6091,6 +6148,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
         allow_none_return: bool = False,
         always_allow_any: bool = False,
         is_callee: bool = False,
+        context: list[Constraint | None] = None,
     ) -> Type:
         """Type check a node in the given type context.  If allow_none_return
         is True and this expression is a call, allow it to return None.  This
@@ -6106,6 +6164,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
             self.in_expression = True
             record_time = True
         self.type_context.append(type_context)
+        self.constraint_context.append(context or [])
         old_is_callee = self.is_callee
         self.is_callee = is_callee
         try:
@@ -6143,6 +6202,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
             )
         self.is_callee = old_is_callee
         self.type_context.pop()
+        self.constraint_context.pop()
         assert typ is not None
         self.chk.store_type(node, typ)
 
@@ -6859,3 +6919,19 @@ def is_type_type_context(context: Type | None) -> bool:
     if isinstance(context, UnionType):
         return any(is_type_type_context(item) for item in context.items)
     return False
+
+
+def get_upper_and_lower(
+    constraints: list[Constraint],
+) -> tuple[list[Constraint], list[Constraint]]:
+    """Get upper and lower bounds from a list of constraints."""
+    upper = []
+    lower = []
+    for constraint in constraints:
+        if constraint.op == SUBTYPE_OF:
+            upper.append(constraint)
+        elif constraint.op == SUPERTYPE_OF:
+            lower.append(constraint)
+        else:
+            raise ValueError(f"Unexpected constraint operator: {constraint.op}")
+    return upper, lower

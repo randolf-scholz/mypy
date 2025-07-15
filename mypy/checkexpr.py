@@ -2137,7 +2137,9 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
             # compute the outer solution
             outer_upper, outer_lower = self.infer_constraints_from_context(callee_type, context)
             # outer_upper, outer_lower = get_upper_and_lower(outer_upper + outer_lower)
+            # outer_constraints = outer_upper # <-- only 3 errors but problematic with outer context.
             outer_constraints = outer_upper  # order matters!
+
             _outer_solution = solve_constraints(
                 callee_type.variables,
                 outer_constraints,
@@ -2148,8 +2150,19 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                 None if has_uninhabited_component(arg) or has_erased_component(arg) else arg
                 for arg in _outer_solution[0]
             ]
-
             outer_solution = (outer_args, _outer_solution[1])
+
+            _weak_outer_solution = solve_constraints(
+                callee_type.variables,
+                outer_upper,
+                strict=self.chk.in_checked_function(),
+                allow_polymorphic=False,
+            )
+            _weak_outer_args = [
+                None if has_uninhabited_component(arg) or has_erased_component(arg) else arg
+                for arg in _outer_solution[0]
+            ]
+            _weak_outer_solution = (outer_args, _weak_outer_solution[1])
 
             outer_callee = self.apply_generic_arguments(
                 callee_type, outer_solution[0], context, skip_unsatisfied=True
@@ -2221,7 +2234,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                 # NOTE: The order of constraints is important here!
                 #  solve(outer + inner) and solve(inner + outer) may yield different results.
                 #  we need to use outer first.
-                joint_constraints = outer_upper + inner_constraints
+                joint_constraints = outer_upper + outer_lower + inner_constraints
                 _joint_solution = solve_constraints(
                     callee_type.variables,
                     joint_constraints,
@@ -2242,6 +2255,8 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                 if (  # determine which solution to take
                     # no inner constraints
                     not inner_constraints
+                    # no outer constraints
+                    # or not (outer_upper + outer_lower)
                     # no outer_constraints
                     or not joint_solution[0]
                     # joint constraints failed to produce a complete solution

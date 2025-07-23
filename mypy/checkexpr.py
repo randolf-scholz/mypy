@@ -2226,7 +2226,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                             ),
                         )
                     )
-                inner_upper, inner_lower = get_upper_and_lower(_inner_constraints)
+                inner_upper, inner_lower = get_upper_and_lower(inner_constraints)
                 # inner_constraints = inner_upper + inner_lower # only use upper constraints
                 # inner_constraints = inner_upper  # only use upper constraints
 
@@ -2234,7 +2234,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                 # NOTE: The order of constraints is important here!
                 #  solve(outer + inner) and solve(inner + outer) may yield different results.
                 #  we need to use outer first.
-                joint_constraints = outer_upper + outer_lower + inner_constraints
+                joint_constraints = outer_upper + inner_upper + inner_lower
                 _joint_solution = solve_constraints(
                     callee_type.variables,
                     joint_constraints,
@@ -2294,6 +2294,27 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
 
                 _o3 = outer_ret_type
                 _j3 = joint_ret_type
+                inferred_args = joint_solution[0] if use_joint else outer_solution[0]
+
+                # print(
+                #     f"\n=== DEBUG ============================"
+                #     f"\ninfer_function_type_arguments result: "
+                #     f"\n\t{callee_type=}"
+                #     f"\n\t{self.type_context=}"
+                #     f"\n\t{self.constraint_context=}"
+                #     f"\n\t{arg_types=}"
+                #     f"\n\t{outer_constraints=}"
+                #     f"\n\t{outer_solution=}"
+                #     f"\n\t{outer_callee=}"
+                #     f"\n\t{inner_constraints=}"
+                #     f"\n\t{joint_constraints=}"
+                #     f"\n\t{joint_solution=}"
+                #     f"\n\t{joint_callee=}"
+                #     f"\n\t{use_joint=}"
+                #     f"\n"
+                #     f"\n\tresult={self.apply_inferred_arguments(callee_type, inferred_args, context)}"
+                #
+                # )
 
                 if use_joint:
                     inferred_args = joint_solution[0]

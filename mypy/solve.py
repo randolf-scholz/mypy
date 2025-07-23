@@ -264,6 +264,10 @@ def solve_one(
 
     candidate: Type | None = None
 
+    #  X <: U1, X <: U2, ... => X <: top ≝ meet(U1, U2, ...) = U1 & U2 & ...
+    #  X :> L1, X :> L2, ... => X :> bot ≝ join(L1, L2, ...) = L1 | L2 | ...
+    #  So, bottom <: X <: top.
+
     # Filter out previous results of failed inference, they will only spoil the current pass...
     # new_uppers = []
     # for u in uppers:
@@ -314,7 +318,7 @@ def solve_one(
         assert isinstance(source_any, ProperType) and isinstance(source_any, AnyType)
         return AnyType(TypeOfAny.from_another_any, source_any=source_any)
     elif bottom is None and top is None:
-        return UninhabitedType() if minimize else object_or_any_from_type(bottom)
+        return None
     elif bottom is None:
         candidate = top if minimize else UninhabitedType()
     elif top is None:

@@ -32,6 +32,7 @@ from mypy.expandtype import (
     expand_type_by_instance,
     freshen_all_functions_type_vars,
     freshen_function_type_vars,
+    get_freshened_tvar_mapping,
 )
 from mypy.infer import ArgumentInferContext, infer_function_type_arguments
 from mypy.literals import literal
@@ -1779,7 +1780,13 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
             callee = callee.copy_modified(ret_type=fresh_ret_type)
 
         if callee.is_generic():
-            callee = freshen_function_type_vars(callee)
+            need_refresh = any(
+                isinstance(v, (ParamSpecType, TypeVarTupleType)) for v in callee.variables
+            )
+            tvmap = get_freshened_tvar_mapping(callee)
+            # apply the new tvars
+            callee = expand_type(callee, tvmap).copy_modified(variables=tvmap.values())
+
             callee = self.infer_function_type_arguments(
                 callee, args, arg_kinds, arg_names, formal_to_actual, need_refresh, context
             )
@@ -2313,7 +2320,6 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                 #     f"\n\t{use_joint=}"
                 #     f"\n"
                 #     f"\n\tresult={self.apply_inferred_arguments(callee_type, inferred_args, context)}"
-                #
                 # )
 
                 if use_joint:

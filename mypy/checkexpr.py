@@ -1783,6 +1783,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
             need_refresh = any(
                 isinstance(v, (ParamSpecType, TypeVarTupleType)) for v in callee.variables
             )
+            # callee = freshen_function_type_vars(callee)
             tvmap = get_freshened_tvar_mapping(callee)
             # apply the new tvars
             callee = expand_type(callee, tvmap).copy_modified(variables=tvmap.values())
@@ -2116,7 +2117,6 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
 
         Return a derived callable type that has the arguments applied.
         """
-
         if self.chk.in_checked_function():
 
             # 1. def [KT, VT] (tuple[KT`499, VT`500]) -> builtins.dict[KT`499, VT`500]
@@ -2233,8 +2233,6 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                     pass1_args.append(arg)
 
             if True:  # NEW CODE
-                # consistent constraints:
-
                 # compute the inner constraints
                 _inner_constraints = infer_constraints_for_callable(
                     callee_type,
@@ -2260,9 +2258,9 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                         )
                     )
                 # drop UninhabitedType constraints
-                inner_constraints = [
-                    c for c in inner_constraints if not has_uninhabited_component(c.target)
-                ]
+                # inner_constraints = [
+                #     c for c in inner_constraints if not has_uninhabited_component(c.target)
+                # ]
                 # filter out meta-variables
                 # inner_constraints = [
                 #     Constraint(c.original_type_var, c.op, replace_meta_vars(c.target, ErasedType()))
@@ -2309,7 +2307,6 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                         is_subtype(outer_ret_type, joint_ret_type)
                         and not is_proper_subtype(joint_ret_type, outer_ret_type)
                     )
-                    # and False
                 ):
                     use_joint = False
                 else:

@@ -117,8 +117,8 @@ def solve_constraints(
                 candidate = UninhabitedType()
                 candidate.ambiguous = True
             else:
-                candidate = originals[v].default
-                # candidate = AnyType(TypeOfAny.special_form)
+                # candidate = originals[v].default
+                candidate = AnyType(TypeOfAny.special_form)
             res.append(candidate)
 
     if not free_vars and not skip_unsatisfied:

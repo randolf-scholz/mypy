@@ -51,8 +51,9 @@ def solve_constraints(
     Return the best type(s) for type variables; each type can be None if the value of
     the variable could not be solved.
 
-    If a variable has no constraints, if strict=True then arbitrarily
-    pick UninhabitedType as the value of the type variable. If strict=False, pick AnyType.
+    If a variable has no constraints, if strict=True then
+    pick its default value.
+    If strict=False, pick AnyType.
     If allow_polymorphic=True, then use the full algorithm that can potentially return
     free type variables in solutions (these require special care when applying). Otherwise,
     use a simplified algorithm that just solves each type variable individually if possible.
@@ -112,10 +113,12 @@ def solve_constraints(
             # No constraints for type variable -- 'UninhabitedType' is the most specific type.
             candidate: Type
             if strict:
+                # candidate = originals[v].default
                 candidate = UninhabitedType()
                 candidate.ambiguous = True
             else:
-                candidate = AnyType(TypeOfAny.special_form)
+                candidate = originals[v].default
+                # candidate = AnyType(TypeOfAny.special_form)
             res.append(candidate)
 
     if not free_vars and not skip_unsatisfied:

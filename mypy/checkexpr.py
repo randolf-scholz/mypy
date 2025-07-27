@@ -2017,12 +2017,24 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
         ctx = self.type_context[-1]
         if not ctx:
             return [], []
+
+        # try so solve ctx using ctx_constraints.
+        # get tvars from self.type_context[-1]
+        # tvars = get_type_vars(ctx)
+        # attempt to solve ctx using constraint_context
+        # contextual_constraints = self.constraint_context[-1]
+        # solution = solve_constraints(tvars, contextual_constraints)
+        # tvmap = {tv.id: s for tv, s in zip(tvars, solution[0]) if s is not None}
+        #  update type variables in the context with the solved values
+        # ctx = ctx.accept(ExpandTypeVisitor(tvmap))
+
         # The return type may have references to type metavariables that
         # we are inferring right now. We must consider them as indeterminate
         # and they are not potential results; thus we replace them with the
         # special ErasedType type. On the other hand, class type variables are
         # valid results.
         erased_ctx = get_proper_type(replace_meta_vars(ctx, ErasedType()))
+        # erased_ctx = get_proper_type(ctx)
         proper_ret = get_proper_type(callee.ret_type)
         if isinstance(proper_ret, UnionType) and isinstance(erased_ctx, UnionType):
             # If both the context and the return type are unions, we simplify shared items
@@ -2188,6 +2200,18 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
             for cons in self.constraint_context:
                 context_constrains.extend(cons)
 
+            # print(
+            #     f"\n=== DEBUG ============================"
+            #     f"\ninfer_function_type_arguments result: "
+            #     f"\n\t{callee_type=}"
+            #     f"\n\t{self.type_context=}"
+            #     f"\n\t{self.constraint_context=}"
+            #     f"\n\t{outer_constraints=}"
+            #     f"\n\t{outer_solution=}"
+            #     f"\n\t{outer_callee=}"
+            #     f"\n"
+            # )
+
             # Disable type errors during type inference. There may be errors
             # due to partial available context information at this time, but
             # these errors can be safely ignored as the arguments will be
@@ -2209,6 +2233,8 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                     pass1_args.append(arg)
 
             if True:  # NEW CODE
+                # consistent constraints:
+
                 # compute the inner constraints
                 _inner_constraints = infer_constraints_for_callable(
                     callee_type,
@@ -2233,6 +2259,16 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                             ),
                         )
                     )
+                # drop UninhabitedType constraints
+                inner_constraints = [
+                    c for c in inner_constraints if not has_uninhabited_component(c.target)
+                ]
+                # filter out meta-variables
+                # inner_constraints = [
+                #     Constraint(c.original_type_var, c.op, replace_meta_vars(c.target, ErasedType()))
+                #     for c in inner_constraints
+                # ]
+
                 inner_upper, inner_lower = get_upper_and_lower(inner_constraints)
                 # inner_constraints = inner_upper + inner_lower # only use upper constraints
                 # inner_constraints = inner_upper  # only use upper constraints
@@ -2241,7 +2277,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                 # NOTE: The order of constraints is important here!
                 #  solve(outer + inner) and solve(inner + outer) may yield different results.
                 #  we need to use outer first.
-                joint_constraints = outer_upper + inner_upper + inner_lower
+                joint_constraints = outer_constraints + inner_constraints
                 _joint_solution = solve_constraints(
                     callee_type.variables,
                     joint_constraints,
@@ -2319,7 +2355,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                 #     f"\n\t{joint_callee=}"
                 #     f"\n\t{use_joint=}"
                 #     f"\n"
-                #     f"\n\tresult={self.apply_inferred_arguments(callee_type, inferred_args, context)}"
+                #     f"\n\tresult={self.apply_generic_arguments(callee_type, inferred_args, context, skip_unsatisfied=True)}"
                 # )
 
                 if use_joint:

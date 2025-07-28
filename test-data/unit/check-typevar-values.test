@@ -19,10 +19,10 @@ o = [object()]
 if int():
     i = f(1)
     s = f('')
-    o = f(1) # E: Value of type variable "T" of "f" cannot be "object"
-
-
-
+    o = f(1) \
+      # E: Incompatible types in assignment (expression has type "list[int]", variable has type "list[object]") \
+      # N: "list" is invariant -- see https://mypy.readthedocs.io/en/stable/common_issues.html#variance \
+      # N: Consider using "Sequence" instead, which is covariant
 [builtins fixtures/list.pyi]
 
 [case testCallGenericFunctionWithTypeVarValueRestrictionAndAnyArgs]

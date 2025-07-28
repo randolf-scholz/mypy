@@ -37,7 +37,7 @@ from mypy.expandtype import (
 from mypy.infer import ArgumentInferContext, infer_function_type_arguments
 from mypy.literals import literal
 from mypy.maptype import map_instance_to_supertype
-from mypy.meet import is_overlapping_types, narrow_declared_type
+from mypy.meet import is_object, is_overlapping_types, narrow_declared_type
 from mypy.message_registry import ErrorMessage
 from mypy.messages import MessageBuilder, format_type
 from mypy.nodes import (
@@ -2257,6 +2257,25 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                             ),
                         )
                     )
+                # minimize = any(c.op == SUBTYPE_OF and not has_erased_component(c.target) for c in inner_constraints + outer_constraints)
+
+                # add_naive = any(c.op == SUBTYPE_OF for c in inner_constraints + outer_constraints)
+
+                minimize = True
+                joint_constraints = outer_constraints + inner_constraints
+
+                naive_constraints = [
+                    Constraint(t, SUBTYPE_OF, t.upper_bound)
+                    for t in callee_type.variables
+                    if isinstance(t, TypeVarType) and not is_object(t.upper_bound)
+                ]
+                naive_constraints += [
+                    Constraint(t, SUBTYPE_OF, make_simplified_union(t.values))
+                    for t in callee_type.variables
+                    if isinstance(t, TypeVarType) and t.values
+                ]
+                if True:
+                    joint_constraints = joint_constraints + naive_constraints
                 # drop UninhabitedType constraints
                 # inner_constraints = [
                 #     c for c in inner_constraints if not has_uninhabited_component(c.target)
@@ -2275,12 +2294,13 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                 # NOTE: The order of constraints is important here!
                 #  solve(outer + inner) and solve(inner + outer) may yield different results.
                 #  we need to use outer first.
-                joint_constraints = outer_constraints + inner_constraints
+
                 _joint_solution = solve_constraints(
                     callee_type.variables,
                     joint_constraints,
                     strict=self.chk.in_checked_function(),
                     allow_polymorphic=False,
+                    minimize=minimize,
                 )
                 joint_args = [
                     None if has_uninhabited_component(arg) or has_erased_component(arg) else arg
@@ -2343,14 +2363,18 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                 #     f"\n\t{self.type_context=}"
                 #     f"\n\t{self.constraint_context=}"
                 #     f"\n\t{arg_types=}"
-                #     f"\n\t{outer_constraints=}"
+                #     f"\n\t{pass1_args=}"
                 #     f"\n\t{outer_solution=}"
                 #     f"\n\t{outer_callee=}"
+                #     f"\n\t{outer_constraints=}"
                 #     f"\n\t{inner_constraints=}"
+                #     f"\n\t{naive_constraints=}"
                 #     f"\n\t{joint_constraints=}"
+                #     f"\n\t{minimize=}"
                 #     f"\n\t{joint_solution=}"
                 #     f"\n\t{joint_callee=}"
                 #     f"\n\t{use_joint=}"
+                #     f"\n\t{inferred_args=}"
                 #     f"\n"
                 #     f"\n\tresult={self.apply_generic_arguments(callee_type, inferred_args, context, skip_unsatisfied=True)}"
                 # )
@@ -2487,6 +2511,9 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
             # In dynamically typed functions use implicit 'Any' types for
             # type variables.
             inferred_args = [AnyType(TypeOfAny.unannotated)] * len(callee_type.variables)
+
+        # print(f"\tfinal inferre")
+        # print(f"\tfinal result: {self.apply_inferred_arguments(callee_type, inferred_args, context)}")
         return self.apply_inferred_arguments(callee_type, inferred_args, context)
 
     def infer_function_type_arguments_pass2(

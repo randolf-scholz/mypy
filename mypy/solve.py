@@ -9,7 +9,7 @@ from typing_extensions import TypeAlias as _TypeAlias
 from mypy.constraints import SUBTYPE_OF, SUPERTYPE_OF, Constraint, infer_constraints, neg_op
 from mypy.expandtype import expand_type
 from mypy.graph_utils import prepare_sccs, strongly_connected_components, topsort
-from mypy.join import join_type_list, object_or_any_from_type
+from mypy.join import join_type_list
 from mypy.meet import meet_type_list, meet_types
 from mypy.subtypes import is_subtype
 from mypy.typeops import get_all_type_vars
@@ -272,12 +272,12 @@ def solve_one(
     #  So, bottom <: X <: top.
 
     # Filter out previous results of failed inference, they will only spoil the current pass...
-    # new_uppers = []
-    # for u in uppers:
-    #     pu = get_proper_type(u)
-    #     if not isinstance(pu, UninhabitedType) or not pu.ambiguous:
-    #         new_uppers.append(u)
-    # uppers = new_uppers
+    new_uppers = []
+    for u in uppers:
+        pu = get_proper_type(u)
+        if not isinstance(pu, UninhabitedType) or not pu.ambiguous:
+            new_uppers.append(u)
+    uppers = new_uppers
 
     # ...unless this is the only information we have, then we just pass it on.
     lowers = list(lowers)
@@ -325,9 +325,9 @@ def solve_one(
     elif bottom is None:
         candidate = top if minimize else UninhabitedType()
     elif top is None:
-        candidate = bottom if minimize else object_or_any_from_type(bottom)
+        candidate = bottom if minimize else bottom
     elif is_subtype(bottom, top):
-        candidate = bottom if minimize else top
+        candidate = bottom if minimize else bottom
     else:
         candidate = None
     return candidate

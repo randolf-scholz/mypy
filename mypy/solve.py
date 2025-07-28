@@ -44,7 +44,7 @@ def solve_constraints(
     strict: bool = True,
     allow_polymorphic: bool = False,
     skip_unsatisfied: bool = False,
-    minimize: bool = True,
+    minimize: bool = False,
 ) -> tuple[list[Type | None], list[TypeVarLikeType]]:
     """Solve type constraints.
 
@@ -84,7 +84,7 @@ def solve_constraints(
     if allow_polymorphic:
         if constraints:
             solutions, free_vars = solve_with_dependent(
-                vars + extra_vars, constraints, vars, originals
+                vars + extra_vars, constraints, vars, originals, minimize=minimize
             )
         else:
             solutions = {}
@@ -135,6 +135,7 @@ def solve_with_dependent(
     constraints: list[Constraint],
     original_vars: list[TypeVarId],
     originals: dict[TypeVarId, TypeVarLikeType],
+    minimize: bool = False,
 ) -> tuple[Solutions, list[TypeVarLikeType]]:
     """Solve set of constraints that may depend on each other, like T <: List[S].
 
@@ -186,13 +187,13 @@ def solve_with_dependent(
 
     solutions: dict[TypeVarId, Type | None] = {}
     for flat_batch in batches:
-        res = solve_iteratively(flat_batch, graph, lowers, uppers)
+        res = solve_iteratively(flat_batch, graph, lowers, uppers, minimize=minimize)
         solutions.update(res)
     return solutions, [free_solutions[tv] for tv in free_vars]
 
 
 def solve_iteratively(
-    batch: list[TypeVarId], graph: Graph, lowers: Bounds, uppers: Bounds
+    batch: list[TypeVarId], graph: Graph, lowers: Bounds, uppers: Bounds, minimize: bool = False
 ) -> Solutions:
     """Solve transitive closure sequentially, updating upper/lower bounds after each step.
 
@@ -218,7 +219,7 @@ def solve_iteratively(
             break
         # Solve each solvable type variable separately.
         s_batch.remove(solvable_tv)
-        result = solve_one(lowers[solvable_tv], uppers[solvable_tv])
+        result = solve_one(lowers[solvable_tv], uppers[solvable_tv], minimize=minimize)
         solutions[solvable_tv] = result
         if result is None:
             # TODO: support backtracking lower/upper bound choices and order within SCCs.
@@ -261,7 +262,7 @@ def _join_sorted_key(t: Type) -> int:
 
 
 def solve_one(
-    lowers: Iterable[Type], uppers: Iterable[Type], minimize: bool = True
+    lowers: Iterable[Type], uppers: Iterable[Type], minimize: bool = False
 ) -> Type | None:
     """Solve constraints by finding by using meets of upper bounds, and joins of lower bounds."""
 
@@ -323,11 +324,11 @@ def solve_one(
     elif bottom is None and top is None:
         return None
     elif bottom is None:
-        candidate = top if minimize else UninhabitedType()
+        candidate = top if not minimize else UninhabitedType()
     elif top is None:
-        candidate = bottom if minimize else bottom
+        candidate = bottom
     elif is_subtype(bottom, top):
-        candidate = bottom if minimize else bottom
+        candidate = bottom
     else:
         candidate = None
     return candidate

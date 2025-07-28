@@ -2269,9 +2269,9 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
 
                 # add_naive = any(c.op == SUBTYPE_OF for c in inner_constraints + outer_constraints)
 
-                minimize = False
                 joint_constraints = outer_constraints + inner_constraints
-
+                minimize = True
+                naive_constraints = []
                 naive_constraints = [
                     Constraint(t, SUBTYPE_OF, t.upper_bound)
                     for t in callee_type.variables
@@ -2282,6 +2282,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                     for t in callee_type.variables
                     if isinstance(t, TypeVarType) and t.values
                 ]
+
                 if True:
                     joint_constraints = joint_constraints + naive_constraints
                 # drop UninhabitedType constraints
@@ -2419,11 +2420,22 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                         formal_to_actual,
                         context=self.argument_infer_context(),
                     )
+                    naive_constraints = [
+                        Constraint(t, SUBTYPE_OF, t.upper_bound)
+                        for t in callee_type.variables
+                        if isinstance(t, TypeVarType)
+                    ]
+                    naive_constraints += [
+                        Constraint(t, SUBTYPE_OF, make_simplified_union(t.values))
+                        for t in callee_type.variables
+                        if isinstance(t, TypeVarType) and t.values
+                    ]
                     new_solution = solve_constraints(
                         callee_type.variables,
-                        new_constraints,
+                        new_constraints + naive_constraints,
                         strict=self.chk.in_checked_function(),
                         allow_polymorphic=False,
+                        minimize=minimize,
                     )
                     inferred_args = new_solution[0]
             else:  # END NEW CODE

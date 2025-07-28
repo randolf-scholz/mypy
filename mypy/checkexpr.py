@@ -2261,7 +2261,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
 
                 # add_naive = any(c.op == SUBTYPE_OF for c in inner_constraints + outer_constraints)
 
-                minimize = True
+                minimize = False
                 joint_constraints = outer_constraints + inner_constraints
 
                 naive_constraints = [

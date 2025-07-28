@@ -37,7 +37,7 @@ from mypy.expandtype import (
 from mypy.infer import ArgumentInferContext, infer_function_type_arguments
 from mypy.literals import literal
 from mypy.maptype import map_instance_to_supertype
-from mypy.meet import is_object, is_overlapping_types, narrow_declared_type
+from mypy.meet import is_overlapping_types, narrow_declared_type
 from mypy.message_registry import ErrorMessage
 from mypy.messages import MessageBuilder, format_type
 from mypy.nodes import (
@@ -1779,6 +1779,14 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
             freeze_all_type_vars(fresh_ret_type)
             callee = callee.copy_modified(ret_type=fresh_ret_type)
 
+        formal_to_actual = map_actuals_to_formals(
+            arg_kinds,
+            arg_names,
+            callee.arg_kinds,
+            callee.arg_names,
+            lambda i: self.accept(args[i]),
+        )
+
         if callee.is_generic():
             need_refresh = any(
                 isinstance(v, (ParamSpecType, TypeVarTupleType)) for v in callee.variables
@@ -2267,7 +2275,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                 naive_constraints = [
                     Constraint(t, SUBTYPE_OF, t.upper_bound)
                     for t in callee_type.variables
-                    if isinstance(t, TypeVarType) and not is_object(t.upper_bound)
+                    if isinstance(t, TypeVarType)
                 ]
                 naive_constraints += [
                     Constraint(t, SUBTYPE_OF, make_simplified_union(t.values))

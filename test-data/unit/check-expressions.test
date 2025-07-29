@@ -309,6 +309,7 @@ main:6: error: Unsupported operand types for << ("A" and "B")
 main:7: error: Unsupported operand types for >> ("A" and "A")
 
 [case testBinaryOperatorContext]
+# gh-19304
 from typing import TypeVar, Generic, Iterable, Iterator, Union
 
 T = TypeVar("T")
@@ -329,6 +330,120 @@ def test_fmt(l1: Vec[int], l2: Vec[int], /) -> None:
 def test_first(l1: Vec[int], l2: Vec[int], /) -> None:
     first(l1 + l2)
 [builtins fixtures/list.pyi]
+
+[case testBinaryOperatorContext2]
+# gh-15087
+class A: ...
+class B(A): ...
+
+def foo(x: list[A]) -> None: ...
+
+def test(l1: list[A], l2: list[B]) -> None:
+    foo(l1 + l2)
+[builtins fixtures/list.pyi]
+
+[case testBinaryOperatorContext3]
+# gh-19413
+from typing import Iterable, TypeVar
+
+T = TypeVar("T")
+
+def id_(iter1: Iterable[T]) -> Iterable[T]: ...
+
+def with_none(x: list[str]) -> None:
+    reveal_type(id_([None] + x))  # N: Revealed type is "typing.Iterable[Union[None, builtins.str]]"
+
+[builtins fixtures/list.pyi]
+
+[case testComparisonContext4]
+# gh-12247
+def IgnoreColor(s: bytes) -> bytes:
+    return bytes(filter(lambda x: not (0x01 <= x <= 0x1F or x == 0x7F), s))
+
+[builtins fixtures/filter.pyi]
+
+
+[case testBinaryOperatorContext5]
+# gh-5874
+from typing import TypeVar, Union
+
+T = TypeVar('T')
+S = TypeVar('S')
+
+def add(x: list[T], y: list[S]) -> list[Union[T, S]]: ...
+
+a: list[int]
+b: list[str]
+
+e: list[Union[int, str]] = add(a, b)
+[builtins fixtures/list.pyi]
+
+[case testBinaryOperatorContext6]
+from typing import Union
+# gh-3933
+mix: list[Union[int, str]] = [1, "foo"]
+strings: list[str] = ["bar"]
+
+mix = mix + strings
+[builtins fixtures/list.pyi]
+
+
+[case testBinaryOperatorContext7]
+from typing import TypeVar, Generic, Union, Any
+
+T = TypeVar('T')
+T_co = TypeVar('T_co', covariant=True)
+S = TypeVar('S')
+
+class A(Generic[T_co]): pass
+
+class B(A[T]):
+    def __add__(self, x: B[S]) -> B[Union[T, S]]: ...
+
+b1: B[Any]
+b2: B[int]
+
+a: A[object] = b1 + b2
+
+[case testBinaryOperatorContext8]
+from typing import Iterable, Iterator, TypeVar, Generic, Union
+
+T = TypeVar("T")
+S = TypeVar("S")
+
+class Vec(Generic[T]):
+    def getitem(self, i: int) -> T: ...            # ensure invariance of T
+    def setitem(self, i: int, v: T) -> None: ...   # ensure invariance of T
+    def __iter__(self) -> Iterator[T]: ...
+    def __add__(self, other: "Vec[S]") -> "Vec[Union[T, S]]": ...
+
+mix: Vec[Union[int, str]]
+strings: Vec[str]
+mix = mix + strings
+mix = strings + mix
+reveal_type(mix + strings)  # N: Revealed type is "__main__.Vec[Union[builtins.int, builtins.str]]"
+reveal_type(strings + mix)  # N: Revealed type is "__main__.Vec[Union[builtins.str, builtins.int]]"
+[builtins fixtures/list.pyi]
+
+
+[case testBinaryOperatorContext9]
+# https://github.com/python/mypy/issues/3933#issuecomment-2272804302
+from typing import Iterable, Iterator, TypeVar, Generic, Union
+
+T = TypeVar("T")
+S = TypeVar("S")
+
+class Vec(Generic[T]):
+    def getitem(self, i: int) -> T: ...            # ensure invariance of T
+    def setitem(self, i: int, v: T) -> None: ...   # ensure invariance of T
+    def __iter__(self) -> Iterator[T]: ...
+    def __add__(self, other: "Vec[S]") -> "Vec[Union[T, S]]": ...
+
+def identity_on_iterable(arg: Iterable[T]) -> Iterable[T]: return arg
+x: Vec[str]
+y: Vec[None]
+reveal_type( identity_on_iterable(y + x) )  # N: Revealed type is "typing.Iterable[Union[None, builtins.str]]"
+reveal_type( identity_on_iterable(x + y) )  # N: Revealed type is "typing.Iterable[Union[builtins.str, None]]"
 
 [case testBooleanAndOr]
 a: A

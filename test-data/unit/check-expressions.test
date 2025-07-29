@@ -445,6 +445,66 @@ y: Vec[None]
 reveal_type( identity_on_iterable(y + x) )  # N: Revealed type is "typing.Iterable[Union[None, builtins.str]]"
 reveal_type( identity_on_iterable(x + y) )  # N: Revealed type is "typing.Iterable[Union[builtins.str, None]]"
 
+
+[case testBinaryOperatorContext10]
+# flags: --python-version 3.12
+from typing import Any
+
+class Vec[T]:
+    def get(self) -> T: ...
+    def set(self, arg: T) -> None: ...
+    def __add__[S](self, other: "Vec[S]") -> "Vec[T | S]": ...
+
+def test(a: Vec[int], b: Vec[str], c: Vec[Any]) -> None:
+    reveal_type(a + b)  # N: Revealed type is "__main__.Vec[Union[builtins.int, builtins.str]]"
+    reveal_type(a + c)  # N: Revealed type is "__main__.Vec[Union[builtins.int, Any]]"
+
+    x: Vec[str | int] = a + b
+    y: Vec[object] = a + b  # E: Incompatible types in assignment (expression has type "Vec[Union[int, str]]", variable has type "Vec[object]")
+
+    z1: Vec[str | int] = a + c
+    z2: Vec[str | int] = c + a
+    # OK: Vec[Any | int] = Vec[object | int] = Vec[object] for materialization Any=object
+    w1: Vec[object] = a + c
+    w2: Vec[object] = c + a
+
+[case testBinaryOperatorContext11]
+# flags: --python-version 3.12
+from typing import Any
+
+class A[R]:
+    # covariant parent class
+    def getter(self) -> R: ...
+
+class B[T](A[T]):
+    # invariant child class
+    def getter(self) -> T: ...
+    def setter(self, arg: T) -> None: ...
+    def __add__[S](self, x: "B[S]") -> "B[T | S]": ...
+
+def test_any(b1: B[Any], b2: B[int], b3: B[Any | int]) -> None:
+    a1: A[object] = b1 + b2
+    a2: A[object] = b2 + b1
+    a3: A[object] = b3
+
+def test_object(b1: B[object], b2: B[int], b3: B[Any | int]) -> None:
+    a1: A[object] = b1 + b2
+    a2: A[object] = b2 + b1
+    a3: A[object] = b3
+
+def test_any2(b1: B[Any], b2: B[int], b3: B[Any | int]) -> None:
+    # B[Any | int] = B[object] for materialization Any=object
+    # therefore assignable
+    a1: B[object] = b1 + b2
+    a2: B[object] = b2 + b1
+    a3: B[object] = b3
+
+def test_object2(b1: B[object], b2: B[int], b3: B[Any | int]) -> None:
+    a1: B[object] = b1 + b2
+    a2: B[object] = b2 + b1
+    a3: B[object] = b3
+
+
 [case testBooleanAndOr]
 a: A
 b: bool
@@ -596,10 +656,6 @@ if int():
 class A:
   def __contains__(self, x: 'A') -> str: pass
 [builtins fixtures/bool.pyi]
-
-[case testInWithInvalidArgs]
-a = 1 in ([1] + ['x'])  # E: List item 0 has incompatible type "str"; expected "int"
-[builtins fixtures/list.pyi]
 
 [case testEq]
 a: A

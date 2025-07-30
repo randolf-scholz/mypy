@@ -3461,6 +3461,124 @@ if x:
 # flags: --local-partial-types --python-version 3.10
 x = None # E: Need type annotation for "x" (hint: "x: <type> | None = ...")
 
+[case testListLiteralConstructorContextCovariant]
+from typing import TypeVar
+from collections.abc import Sequence
+
+T = TypeVar("T")
+def id_(x: Sequence[T]) -> list[T]: ...
+
+x0: list[object] = [1]
+x1: list[object] = id_([1])
+x2: list[object] = id_(id_([1]))
+x3: list[object] = id_(id_(id_([1])))
+x4: list[object] = id_(id_(id_(id_([1]))))
+[builtins fixtures/list.pyi]
+
+[case testListLiteralConstructorContextInvariant]
+from typing import TypeVar
+from collections.abc import Set as MutableSequence
+
+T = TypeVar("T")
+def id_(x: MutableSequence[T]) -> list[T]: ...
+
+x0: list[object] = [1]
+x1: list[object] = id_([1])
+x2: list[object] = id_(id_([1]))
+x3: list[object] = id_(id_(id_([1])))
+x4: list[object] = id_(id_(id_(id_([1]))))
+[builtins fixtures/list.pyi]
+
+[case testTupleLiteralConstructorContextCovariant]
+from typing import TypeVar
+from collections.abc import Sequence
+
+T = TypeVar("T")
+def id_(x: Sequence[T]) -> tuple[T]: ...
+
+x0: tuple[object] = (1,)
+x1: tuple[object] = id_((1,))
+x2: tuple[object] = id_(id_((1,)))
+x3: tuple[object] = id_(id_(id_((1,))))
+x4: tuple[object] = id_(id_(id_(id_((1,)))))
+[builtins fixtures/tuple.pyi]
+
+[case testTupleLiteralConstructorContextInvariant]
+from typing import TypeVar
+from collections.abc import Set as MutableSequence
+
+
+T = TypeVar("T")
+def id_(x: MutableSequence[T]) -> tuple[T]: ...
+
+x0: tuple[object] = (1,)
+x1: tuple[object] = id_((1,))
+x2: tuple[object] = id_(id_((1,)))
+x3: tuple[object] = id_(id_(id_((1,))))
+x4: tuple[object] = id_(id_(id_(id_((1,)))))
+[builtins fixtures/tuple.pyi]
+
+[case testSetLiteralConstructorContextCovariant]
+from typing import TypeVar
+from collections.abc import Set as AbstractSet
+
+T = TypeVar("T")
+def id_(x: AbstractSet[T]) -> set[T]: ...
+
+x0: set[object] = {1}
+x1: set[object] = id_({1})
+x2: set[object] = id_(id_({1}))
+x3: set[object] = id_(id_(id_({1})))
+x4: set[object] = id_(id_(id_(id_({1}))))
+[builtins fixtures/set.pyi]
+
+[case testSetLiteralConstructorContextInvariant]
+from typing import TypeVar
+from collections.abc import MutableSet
+
+T = TypeVar("T")
+def id_(x: MutableSet[T]) -> set[T]: ...
+
+x0: set[object] = {1}
+x1: set[object] = id_({1})
+x2: set[object] = id_(id_({1}))
+x3: set[object] = id_(id_(id_({1})))
+x4: set[object] = id_(id_(id_(id_({1}))))
+[builtins fixtures/set.pyi]
+
+[case testDictLiteralConstructorContextCovariant]
+from typing import TypeVar
+from collections.abc import Mapping
+
+K = TypeVar("K")
+V = TypeVar("V")
+def id_(x: Mapping[K, V]) -> dict[K, V]: ...
+
+x0: dict[object, object] = {"a": 1}
+x1: dict[object, object] = id_({"a": 1})
+x2: dict[object, object] = id_(id_({"a": 1}))
+x3: dict[object, object] = id_(id_(id_({"a": 1})))
+x4: dict[object, object] = id_(id_(id_(id_({"a": 1}))))
+[builtins fixtures/dict.pyi]
+
+[case testDictLiteralConstructorContextInvariant]
+from typing import TypeVar
+from collections.abc import MutableMapping
+
+K = TypeVar("K")
+V = TypeVar("V")
+def id_(x: MutableMapping[K, V]) -> dict[K, V]: ...
+
+x0: dict[object, object] = {"a": 1}
+x1: dict[object, object] = id_({"a": 1})
+x2: dict[object, object] = id_(id_({"a": 1}))
+x3: dict[object, object] = id_(id_(id_({"a": 1})))
+x4: dict[object, object] = id_(id_(id_(id_({"a": 1}))))
+[builtins fixtures/dict.pyi]
+
+
+
+
 [case testTupleContextFromIterable]
 from typing import TypeVar, Iterable, List, Union
 

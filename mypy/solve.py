@@ -9,7 +9,7 @@ from typing_extensions import TypeAlias as _TypeAlias
 from mypy.constraints import SUBTYPE_OF, SUPERTYPE_OF, Constraint, infer_constraints, neg_op
 from mypy.expandtype import expand_type
 from mypy.graph_utils import prepare_sccs, strongly_connected_components, topsort
-from mypy.join import join_type_list, object_or_any_from_type
+from mypy.join import join_type_list
 from mypy.meet import meet_type_list, meet_types
 from mypy.subtypes import is_subtype
 from mypy.typeops import get_all_type_vars
@@ -45,7 +45,6 @@ def solve_constraints(
     allow_polymorphic: bool = False,
     skip_unsatisfied: bool = False,
     minimize: bool = False,
-    maximize: bool = False,
 ) -> tuple[list[Type | None], list[TypeVarLikeType]]:
     """Solve type constraints.
 
@@ -97,7 +96,7 @@ def solve_constraints(
                 continue
             lowers = [c.target for c in cs if c.op == SUPERTYPE_OF]
             uppers = [c.target for c in cs if c.op == SUBTYPE_OF]
-            solution = solve_one(lowers, uppers, minimize=minimize, maximize=maximize)
+            solution = solve_one(lowers, uppers, minimize=minimize)
 
             # Do not leak type variables in non-polymorphic solutions.
             if solution is None or not get_vars(
@@ -260,7 +259,7 @@ def _join_sorted_key(t: Type) -> int:
 
 
 def solve_one(
-    lowers: Iterable[Type], uppers: Iterable[Type], minimize: bool = False, maximize: bool = False
+    lowers: Iterable[Type], uppers: Iterable[Type], minimize: bool = False
 ) -> Type | None:
     """Solve constraints by finding by using meets of upper bounds, and joins of lower bounds."""
 
@@ -316,28 +315,15 @@ def solve_one(
         assert isinstance(source_any, ProperType) and isinstance(source_any, AnyType)
         return AnyType(TypeOfAny.from_another_any, source_any=source_any)
 
-    assert not (minimize and maximize)
-
-    if minimize is True:
+    if minimize:  # choose smallest solution
         if bottom is None and top is None:
             return None
         elif bottom is None:
-            candidate = top if not minimize else UninhabitedType()
+            candidate = UninhabitedType()
         elif top is None:
             candidate = bottom
         elif is_subtype(bottom, top):
             candidate = bottom
-        else:
-            candidate = None
-    elif maximize is True:
-        if bottom is None and top is None:
-            return None
-        elif bottom is None:
-            candidate = top
-        elif top is None:
-            candidate = object_or_any_from_type(p_bottom)
-        elif is_subtype(bottom, top):
-            candidate = top
         else:
             candidate = None
     else:  # choose "best" solution

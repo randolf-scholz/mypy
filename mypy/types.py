@@ -2673,7 +2673,11 @@ class TypedDictType(ProperType):
         if item_names is not None:
             items = {k: v for (k, v) in items.items() if k in item_names}
             required_keys &= set(item_names)
-        return TypedDictType(items, required_keys, readonly_keys, fallback, self.line, self.column)
+        result = TypedDictType(
+            items, required_keys, readonly_keys, fallback, self.line, self.column
+        )
+        result.to_be_mutated = self.to_be_mutated
+        return result
 
     def create_anonymous_fallback(self) -> Instance:
         anonymous = self.as_anonymous()

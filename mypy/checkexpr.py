@@ -2304,7 +2304,6 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                     f"\n\t{self.constraint_context=}"
                     f"\n\t{arg_types=}"
                     f"\n\t{pass1_args=}"
-                    f"\n\t{outer_callee=}"
                     f"\n\t{outer_constraints=}"
                     f"\n\t{inner_constraints=}"
                     f"\n\t{naive_constraints=}"
@@ -2312,6 +2311,8 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                     f"\n\t{outer_solution=}"
                     f"\n\t{inner_solution=}"
                     f"\n\t{joint_solution=}"
+                    f"\n\t{outer_callee=}"
+                    f"\n\t{inner_callee=}"
                     f"\n\t{joint_callee=}"
                     f"\n\t{use_joint=}"
                     f"\n\t{inferred_args=}"
@@ -2439,10 +2440,18 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                 # be interpreted as def [T] (T) -> T, but dict[T, T] cannot be expressed.
                 applied = applytype.apply_poly(poly_callee_type, free_vars)
                 if applied is not None and all(
-                    a is not None and not isinstance(get_proper_type(a), UninhabitedType)
+                    a is not None
+                    and not has_erased_component(a)
+                    and not has_uninhabited_component(a)
                     for a in poly_inferred_args
                 ):
-                    show(f"\n\tTriggered polymorphic inference: {applied=}")
+                    show(
+                        f"\nTriggered polymorphic inference:"
+                        f"\n\t{poly_callee_type=}"
+                        f"\n\t{poly_inferred_args=}"
+                        f"\n\t{free_vars=}"
+                        f"\n\t{applied=}"
+                    )
                     freeze_all_type_vars(applied)
                     return applied
                 # If it didn't work, erase free variables as uninhabited, to avoid confusing errors.
@@ -7114,6 +7123,9 @@ def is_type_type_context(context: Type | None) -> bool:
     if isinstance(context, UnionType):
         return any(is_type_type_context(item) for item in context.items)
     return False
+
+
+# –
 
 
 def show(*args, **kwargs) -> None:

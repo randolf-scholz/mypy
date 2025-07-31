@@ -2159,7 +2159,12 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
             # inferred again later.
             with self.msg.filter_errors():
                 arg_types = self.infer_arg_types_in_context(
-                    callee_type, args, arg_kinds, formal_to_actual, context=outer_constraints
+                    # need to use both naive and outer constraints to fix `testWideOuterContextEmptyError`
+                    callee_type,
+                    args,
+                    arg_kinds,
+                    formal_to_actual,
+                    context=outer_constraints + naive_constraints,
                 )
 
             arg_pass_nums = self.get_arg_infer_passes(
@@ -2311,7 +2316,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                 #     f"\n\t{use_joint=}"
                 #     f"\n\t{inferred_args=}"
                 #     f"\n"
-                #     f"\n\tresult={self.apply_generic_arguments(callee_type, inferred_args, context, skip_unsatisfied=True)}"
+                #     f"\n\tresult={self.apply_generic_arguments(callee_type, inferred_args, context, skip_unsatisfied=True)}",
                 # )
 
                 if use_joint:
@@ -2336,7 +2341,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                     # If we cannot use the joint solution, fall back to a 2 stage inference,
                     # by first applying the outer solution, and then inferring the inner again
                     callee_type = self.apply_generic_arguments(
-                        callee_type, inferred_args, context, skip_unsatisfied=True
+                        callee_type, outer_solution, context, skip_unsatisfied=True
                     )
 
                     # QUESTION: Do we need to recompute formal_to_actual, arg_types and pass1_args here???
@@ -2356,6 +2361,10 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                         allow_polymorphic=False,
                         minimize=True,
                     )
+                    # print(
+                    #     f"Two stage inference: "
+                    #     f"\n\t{callee_type=}\n\t{inferred_args=}"
+                    # )
                     # inferred_args = [
                     #     None if has_uninhabited_component(arg) or has_erased_component(arg) else arg
                     #     for arg in inferred_args
@@ -2397,16 +2406,35 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                 # variables while allowing for polymorphic solutions, i.e. for solutions
                 # potentially involving free variables.
                 # TODO: support the similar inference for return type context.
-                poly_inferred_args, free_vars = infer_function_type_arguments(
+                # Infer constraints.
+                constraints = infer_constraints_for_callable(
                     callee_type,
                     arg_types,
                     arg_kinds,
                     arg_names,
                     formal_to_actual,
                     context=self.argument_infer_context(),
+                )
+
+                # Solve constraints.
+                type_vars = callee_type.variables
+                poly_inferred_args, free_vars = solve_constraints(
+                    type_vars,
+                    constraints,
                     strict=self.chk.in_checked_function(),
                     allow_polymorphic=True,
                 )
+
+                # poly_inferred_args, free_vars = infer_function_type_arguments(
+                #     callee_type,
+                #     arg_types,
+                #     arg_kinds,
+                #     arg_names,
+                #     formal_to_actual,
+                #     context=self.argument_infer_context(),
+                #     strict=self.chk.in_checked_function(),
+                #     allow_polymorphic=True,
+                # )
                 poly_callee_type = self.apply_generic_arguments(
                     callee_type, poly_inferred_args, context
                 )
@@ -2417,6 +2445,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                     a is not None and not isinstance(get_proper_type(a), UninhabitedType)
                     for a in poly_inferred_args
                 ):
+                    # print(f"\n\tTriggered polymorphic inference: {applied=}")
                     freeze_all_type_vars(applied)
                     return applied
                 # If it didn't work, erase free variables as uninhabited, to avoid confusing errors.
@@ -2437,7 +2466,13 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
             # type variables.
             inferred_args = [AnyType(TypeOfAny.unannotated)] * len(callee_type.variables)
 
-        # print(f"\tfinal_result={self.apply_inferred_arguments(callee_type, inferred_args, context)}")
+        # inferred_args = [
+        #     None if isinstance(arg, UninhabitedType) else arg for arg in inferred_args
+        # ]
+        # print(
+        #     f"\tfinal_args={inferred_args}"
+        #     f"\tfinal_result={self.apply_inferred_arguments(callee_type, inferred_args, context)}"
+        # )
 
         return self.apply_inferred_arguments(callee_type, inferred_args, context)
 
@@ -6308,13 +6343,26 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
             # compute solved outer context.
             ctx_vars = get_type_vars(self.type_context[-1])
             ctx_cons = self.constraint_context[-1]
-            ctx_sol, _ = solve_constraints(ctx_vars, ctx_cons)
+
+            # add trivial constraints:
+            # naive_constraints = [
+            #     Constraint(t, SUBTYPE_OF, t.upper_bound)
+            #     for t in ctx_vars
+            #     if isinstance(t, TypeVarType)
+            # ]
+            # ctx_cons += naive_constraints
+
+            ctx_sol, _ = solve_constraints(ctx_vars, ctx_cons, minimize=True)
+
+            # Skip types that did not resolve
+            ctx_sol = [None if has_uninhabited_component(t) else t for t in ctx_sol]
 
             # apply the solution
             ctx_tvmap = {
                 v.id: ctx_sol[i] for i, v in enumerate(ctx_vars) if ctx_sol[i] is not None
             }
             self.type_context[-1] = expand_type(self.type_context[-1], ctx_tvmap)
+        type_context = self.type_context[-1]
 
         old_is_callee = self.is_callee
         self.is_callee = is_callee

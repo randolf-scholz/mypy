@@ -148,7 +148,6 @@ from mypy.typeops import (
     get_type_vars,
     is_literal_type_like,
     make_simplified_union,
-    simple_literal_type,
     true_only,
     try_expanding_sum_type_to_union,
     try_getting_str_literals,
@@ -2105,66 +2104,61 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
 
         Return a derived callable type that has the arguments applied.
         """
-
-        # compute the outer solution
-        outer_constraints = self.infer_constraints_from_context(callee_type, context)
-        outer_solution, _ = solve_constraints(
-            callee_type.variables,
-            outer_constraints + self.constraint_context[-1],
-            strict=self.chk.in_checked_function(),
-            allow_polymorphic=False,
-        )
-        # filter out non-solutions containing "erased" or "uninhabited"
-        outer_solution = [
-            None if has_uninhabited_component(arg) or has_erased_component(arg) else arg
-            for arg in outer_solution
-        ]
-        # compute the return type.
-        outer_callee = self.apply_generic_arguments(
-            callee_type, outer_solution, context, skip_unsatisfied=True
-        )
-        outer_ret_type = get_proper_type(outer_callee.ret_type)
-
-        # compute the inner constraints
-        # these trivial constraints are not returned by infer_constraints_for_callable for some reason...
-        naive_constraints = [
-            Constraint(t, SUBTYPE_OF, t.upper_bound)
-            for t in callee_type.variables
-            if isinstance(t, TypeVarType)
-        ]
-        # use an upper bound for constrained type variables
-        naive_constraints += [
-            Constraint(t, SUBTYPE_OF, make_simplified_union(t.values))
-            for t in callee_type.variables
-            if isinstance(t, TypeVarType) and t.values
-        ]
-
-        show(
-            f"\n=== DEBUG ============================"
-            f"\ninfer_function_type_arguments result: "
-            f"\n\t{callee_type=}"
-            f"\n\t{callee_type.special_sig=}"
-            f"\n\t{self.type_context=}"
-            f"\n\t{self.constraint_context=}"
-            f"\n\t{naive_constraints=}"
-            f"\n\t{outer_constraints=}"
-            f"\n\t{outer_solution=}"
-            f"\n\t{outer_callee=}"
-        )
-
         if self.chk.in_checked_function():
+            # compute the outer solution
+            outer_constraints = self.infer_constraints_from_context(callee_type, context)
+            outer_solution, _ = solve_constraints(
+                callee_type.variables,
+                outer_constraints + self.constraint_context[-1],
+                strict=self.chk.in_checked_function(),
+                allow_polymorphic=False,
+            )
+            outer_solution = filter_solution(outer_solution)
+            outer_callee = self.apply_generic_arguments(
+                callee_type, outer_solution, context, skip_unsatisfied=True
+            )
+
+            # compute the trivial constraints
+            # each TVar is a subtype of its upper bound
+            trivial_constraints = [
+                Constraint(t, SUBTYPE_OF, t.upper_bound)
+                for t in callee_type.variables
+                if isinstance(t, TypeVarType)
+            ]
+            # a constrained TVar is a subtype of the union of its values
+            # relevant for `testCallGenericFunctionWithTypeVarValueRestrictionUsingContext`
+            trivial_constraints += [
+                Constraint(t, SUBTYPE_OF, make_simplified_union(t.values))
+                for t in callee_type.variables
+                if isinstance(t, TypeVarType) and t.values
+            ]
+
+            show(
+                f"\n=== DEBUG ============================"
+                f"\ninfer_function_type_arguments result: "
+                f"\n\t{callee_type=}"
+                f"\n\t{callee_type.special_sig=}"
+                f"\n\t{self.type_context=}"
+                f"\n\t{self.constraint_context=}"
+                f"\n\t{trivial_constraints=}"
+                f"\n\t{outer_constraints=}"
+                f"\n\t{outer_solution=}"
+                f"\n\t{outer_callee=}"
+            )
+
             # Disable type errors during type inference. There may be errors
             # due to partial available context information at this time, but
             # these errors can be safely ignored as the arguments will be
             # inferred again later.
             with self.msg.filter_errors():
                 arg_types = self.infer_arg_types_in_context(
-                    # need to use both naive and outer constraints to fix `testWideOuterContextEmptyError`
                     callee_type,
                     args,
                     arg_kinds,
                     formal_to_actual,
-                    context=outer_constraints + naive_constraints,
+                    # Adding the trivial constraints ensures the context is always non-empty
+                    # relevant for `testWideOuterContext` unit tests.
+                    context=outer_constraints + trivial_constraints,
                 )
 
             arg_pass_nums = self.get_arg_infer_passes(
@@ -2179,6 +2173,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                     pass1_args.append(arg)
 
             if True:  # NEW CODE
+                # compute the inner solution
                 _inner_constraints = infer_constraints_for_callable(
                     callee_type,
                     pass1_args,
@@ -2188,42 +2183,28 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                     context=self.argument_infer_context(),
                 )
                 # HACK: convert "Literal?" constraints to their non-literal versions.
-                inner_constraints: list[Constraint] = []
-                for constraint in _inner_constraints:
-                    target = get_proper_type(constraint.target)
-                    inner_constraints.append(
-                        Constraint(
-                            constraint.original_type_var,
-                            constraint.op,
-                            (
-                                target.copy_modified(last_known_value=None)
-                                if isinstance(target, Instance)
-                                else target
-                            ),
-                        )
-                    )
-
-                # compute the inner solution
+                # relevant for `testLiteral*` tests.
+                inner_constraints = [
+                    Constraint(c.original_type_var, c.op, forget_last_known_value(c.target))
+                    for c in _inner_constraints
+                ]
                 inner_solution, _ = solve_constraints(
                     callee_type.variables,
-                    inner_constraints + naive_constraints,
+                    inner_constraints + trivial_constraints,
                     strict=self.chk.in_checked_function(),
                     allow_polymorphic=False,
                     minimize=True,
                 )
-                inner_solution = [
-                    None if has_uninhabited_component(arg) or has_erased_component(arg) else arg
-                    for arg in inner_solution
-                ]
+                inner_solution = filter_solution(inner_solution)
                 inner_callee = self.apply_generic_arguments(
                     callee_type, inner_solution, context, skip_unsatisfied=True
                 )
-                inner_ret_type = get_proper_type(inner_callee.ret_type)
 
                 # compute the joint solution using both inner and outer constraints.
                 # NOTE: The order of constraints is important here!
                 #  solve(outer + inner) and solve(inner + outer) may yield different results.
-                joint_constraints = outer_constraints + naive_constraints + inner_constraints
+                #  see https://github.com/python/mypy/issues/19551
+                joint_constraints = outer_constraints + trivial_constraints + inner_constraints
                 joint_solution, _ = solve_constraints(
                     callee_type.variables,
                     joint_constraints,
@@ -2232,41 +2213,23 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                     minimize=True,
                 )
                 # filter out non-solutions containing "erased" or "uninhabited"
-                joint_solution = [
-                    None if has_uninhabited_component(arg) or has_erased_component(arg) else arg
-                    for arg in joint_solution
-                ]
+                joint_solution = filter_solution(joint_solution)
                 joint_callee = self.apply_generic_arguments(
                     callee_type, joint_solution, context, skip_unsatisfied=True
                 )
-                joint_ret_type = get_proper_type(joint_callee.ret_type)
 
                 # determine which solution to take
-                use_joint = (
-                    # only use joint if it produced a more complete solution than outer_solution
-                    # That is if joint[k]=None ⟹ outer[k]=None
-                    all(
-                        (j is not None or o is None)
-                        for j, o in zip(joint_solution, outer_solution)
-                    )
-                    # only use joint if it is more concrete than the outer solution
-                    # and (
-                    #     is_proper_subtype(joint_ret_type, outer_ret_type)
-                    #     or not is_subtype(outer_ret_type, joint_ret_type)
-                    # )
+                PREFER_INNER_OVER_OUTER: bool = False
+                use_joint = all(
+                    # only use joint if it solved at least the same variables as the outer solution
+                    # That is if: ```joint[k]=None ⟹ outer[k]=None```
+                    # or, equivalently, if ```not (joint[k]=None) or outer[k]=None```
+                    (j is not None or o is None)
+                    for j, o in zip(joint_solution, outer_solution)
                 )
-                use_inner = (
-                    False
-                    and not use_joint
-                    and all(
-                        (j is not None or o is None)
-                        for j, o in zip(inner_solution, outer_solution)
-                    )
-                    # and (
-                    #     is_proper_subtype(inner_ret_type, outer_ret_type)
-                    #     or not is_subtype(outer_ret_type, inner_ret_type)
-                    # )
-                )
+                # currently disabled
+                use_inner = PREFER_INNER_OVER_OUTER and not use_joint
+
                 if use_joint:
                     inferred_args = joint_solution
                 elif use_inner:
@@ -2274,26 +2237,26 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                 else:
                     inferred_args = outer_solution
 
-                if (
-                    callee_type.special_sig == "dict"
-                    and len(inferred_args) == 2
-                    and (ARG_NAMED in arg_kinds or ARG_STAR2 in arg_kinds)
-                ):
-                    # HACK: Infer str key type for dict(...) with keyword args. The type system
-                    #       can't represent this so we special case it, as this is a pretty common
-                    #       thing. This doesn't quite work with all possible subclasses of dict
-                    #       if they shuffle type variables around, as we assume that there is a 1-1
-                    #       correspondence with dict type variables. This is a marginal issue and
-                    #       a little tricky to fix so it's left unfixed for now.
-                    first_arg = get_proper_type(inferred_args[0])
-                    if first_arg is None or isinstance(first_arg, UninhabitedType):
-                        inferred_args[0] = self.named_type("builtins.str")
-                    elif not first_arg or not is_subtype(
-                        self.named_type("builtins.str"), first_arg
-                    ):
-                        self.chk.fail(
-                            message_registry.KEYWORD_ARGUMENT_REQUIRES_STR_KEY_TYPE, context
-                        )
+                # if (
+                #     callee_type.special_sig == "dict"
+                #     and len(inferred_args) == 2
+                #     and (ARG_NAMED in arg_kinds or ARG_STAR2 in arg_kinds)
+                # ):
+                #     # HACK: Infer str key type for dict(...) with keyword args. The type system
+                #     #       can't represent this so we special case it, as this is a pretty common
+                #     #       thing. This doesn't quite work with all possible subclasses of dict
+                #     #       if they shuffle type variables around, as we assume that there is a 1-1
+                #     #       correspondence with dict type variables. This is a marginal issue and
+                #     #       a little tricky to fix so it's left unfixed for now.
+                #     first_arg = get_proper_type(inferred_args[0])
+                #     if first_arg is None or isinstance(first_arg, UninhabitedType):
+                #         inferred_args[0] = self.named_type("builtins.str")
+                #     elif not first_arg or not is_subtype(
+                #         self.named_type("builtins.str"), first_arg
+                #     ):
+                #         self.chk.fail(
+                #             message_registry.KEYWORD_ARGUMENT_REQUIRES_STR_KEY_TYPE, context
+                #         )
 
                 show(
                     f"\n=== DEBUG ============================"
@@ -2306,7 +2269,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                     f"\n\t{pass1_args=}"
                     f"\n\t{outer_constraints=}"
                     f"\n\t{inner_constraints=}"
-                    f"\n\t{naive_constraints=}"
+                    f"\n\t{trivial_constraints=}"
                     f"\n\t{joint_constraints=}"
                     f"\n\t{outer_solution=}"
                     f"\n\t{inner_solution=}"
@@ -2323,7 +2286,6 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                 if use_joint:
                     inferred_args = inferred_args
                 elif use_inner:
-                    pass
                     # If we can use the inner solution, apply it.
                     callee_type = self.apply_generic_arguments(
                         callee_type, inferred_args, context, skip_unsatisfied=True
@@ -2338,6 +2300,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                         strict=self.chk.in_checked_function(),
                         allow_polymorphic=False,
                     )
+                    inferred_args = filter_solution(inferred_args)
                 else:
                     # If we cannot use the joint solution, fall back to a 2 stage inference,
                     # by first applying the outer solution, and then inferring the inner again
@@ -2357,11 +2320,12 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                     )
                     inferred_args, _ = solve_constraints(
                         callee_type.variables,
-                        new_inner_constraints + naive_constraints,
+                        new_inner_constraints + trivial_constraints,
                         strict=self.chk.in_checked_function(),
                         allow_polymorphic=False,
                         minimize=True,
                     )
+                    inferred_args = filter_solution(inferred_args)
                     show(f"Two stage inference: \n\t{callee_type=}\n\t{inferred_args=}")
                     # inferred_args = [
                     #     None if has_uninhabited_component(arg) or has_erased_component(arg) else arg
@@ -2382,6 +2346,23 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                     need_refresh,
                     context,
                 )
+
+            if (
+                callee_type.special_sig == "dict"
+                and len(inferred_args) == 2
+                and (ARG_NAMED in arg_kinds or ARG_STAR2 in arg_kinds)
+            ):
+                # HACK: Infer str key type for dict(...) with keyword args. The type system
+                #       can't represent this so we special case it, as this is a pretty common
+                #       thing. This doesn't quite work with all possible subclasses of dict
+                #       if they shuffle type variables around, as we assume that there is a 1-1
+                #       correspondence with dict type variables. This is a marginal issue and
+                #       a little tricky to fix so it's left unfixed for now.
+                first_arg = get_proper_type(inferred_args[0])
+                if first_arg is None or isinstance(first_arg, UninhabitedType):
+                    inferred_args[0] = self.named_type("builtins.str")
+                elif not first_arg or not is_subtype(self.named_type("builtins.str"), first_arg):
+                    self.chk.fail(message_registry.KEYWORD_ARGUMENT_REQUIRES_STR_KEY_TYPE, context)
 
             if not self.chk.options.old_type_inference and any(
                 a is None
@@ -2404,47 +2385,23 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                 # variables while allowing for polymorphic solutions, i.e. for solutions
                 # potentially involving free variables.
                 # TODO: support the similar inference for return type context.
-                # Infer constraints.
-                constraints = infer_constraints_for_callable(
+                poly_inferred_args, free_vars = infer_function_type_arguments(
                     callee_type,
                     arg_types,
                     arg_kinds,
                     arg_names,
                     formal_to_actual,
                     context=self.argument_infer_context(),
-                )
-
-                # Solve constraints.
-                type_vars = callee_type.variables
-                poly_inferred_args, free_vars = solve_constraints(
-                    type_vars,
-                    constraints,
                     strict=self.chk.in_checked_function(),
                     allow_polymorphic=True,
                 )
-
-                # poly_inferred_args, free_vars = infer_function_type_arguments(
-                #     callee_type,
-                #     arg_types,
-                #     arg_kinds,
-                #     arg_names,
-                #     formal_to_actual,
-                #     context=self.argument_infer_context(),
-                #     strict=self.chk.in_checked_function(),
-                #     allow_polymorphic=True,
-                # )
                 poly_callee_type = self.apply_generic_arguments(
                     callee_type, poly_inferred_args, context
                 )
                 # Try applying inferred polymorphic type if possible, e.g. Callable[[T], T] can
                 # be interpreted as def [T] (T) -> T, but dict[T, T] cannot be expressed.
                 applied = applytype.apply_poly(poly_callee_type, free_vars)
-                if applied is not None and all(
-                    a is not None
-                    and not has_erased_component(a)
-                    and not has_uninhabited_component(a)
-                    for a in poly_inferred_args
-                ):
+                if applied is not None and all(is_solution(a) for a in poly_inferred_args):
                     show(
                         f"\nTriggered polymorphic inference:"
                         f"\n\t{poly_callee_type=}"
@@ -2471,15 +2428,6 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
             # In dynamically typed functions use implicit 'Any' types for
             # type variables.
             inferred_args = [AnyType(TypeOfAny.unannotated)] * len(callee_type.variables)
-
-        # inferred_args = [
-        #     None if isinstance(arg, UninhabitedType) else arg for arg in inferred_args
-        # ]
-        show(
-            f"\tfinal_args={inferred_args}"
-            f"\tfinal_result={self.apply_inferred_arguments(callee_type, inferred_args, context)}"
-        )
-
         return self.apply_inferred_arguments(callee_type, inferred_args, context)
 
     def infer_function_type_arguments_pass2(
@@ -6195,84 +6143,25 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
             elif else_map is None:
                 self.msg.redundant_condition_in_if(True, e.cond)
 
-        if True:
+        if ctx is None:
+            # When no context is provided, compute each branch individually, and
+            # use the union of the results as artificial context. Important for:
+            # - testUnificationDict
+            # - testConditionalExpressionWithEmpty
             ctx_if_type = self.analyze_cond_branch(
                 if_map, e.if_expr, context=ctx, allow_none_return=allow_none_return
             )
             ctx_else_type = self.analyze_cond_branch(
                 else_map, e.else_expr, context=ctx, allow_none_return=allow_none_return
             )
-
             ctx = make_simplified_union([ctx_if_type, ctx_else_type])
 
-            if_type = self.analyze_cond_branch(
-                if_map, e.if_expr, context=ctx, allow_none_return=allow_none_return
-            )
-            else_type = self.analyze_cond_branch(
-                else_map, e.else_expr, context=ctx, allow_none_return=allow_none_return
-            )
-        else:
-            if_type = self.analyze_cond_branch(
-                if_map, e.if_expr, context=ctx, allow_none_return=allow_none_return
-            )
-
-            # we want to keep the narrowest value of if_type for union'ing the branches
-            # however, it would be silly to pass a literal as a type context. Pass the
-            # underlying fallback type instead.
-            if_type_fallback = simple_literal_type(get_proper_type(if_type)) or if_type
-
-            # Analyze the right branch using full type context and store the type
-            full_context_else_type = self.analyze_cond_branch(
-                else_map, e.else_expr, context=ctx, allow_none_return=allow_none_return
-            )
-            else_type_fallback = (
-                simple_literal_type(get_proper_type(full_context_else_type))
-                or full_context_else_type
-            )
-            if not mypy.checker.is_valid_inferred_type(if_type, self.chk.options):
-                # Analyze the right branch disregarding the left branch.
-                else_type = full_context_else_type
-                # we want to keep the narrowest value of else_type for union'ing the branches
-                # however, it would be silly to pass a literal as a type context. Pass the
-                # underlying fallback type instead.
-                else_type_fallback = simple_literal_type(get_proper_type(else_type)) or else_type
-
-                # If it would make a difference, re-analyze the left
-                # branch using the right branch's type as context.
-                if ctx is None or not is_equivalent(else_type_fallback, ctx):
-                    # TODO: If it's possible that the previous analysis of
-                    # the left branch produced errors that are avoided
-                    # using this context, suppress those errors.
-                    if_type = self.analyze_cond_branch(
-                        if_map,
-                        e.if_expr,
-                        context=else_type_fallback,
-                        allow_none_return=allow_none_return,
-                    )
-
-            elif if_type_fallback == ctx:
-                # There is no point re-running the analysis if if_type is equal to ctx.
-                # That would  be an exact duplicate of the work we just did.
-                # This optimization is particularly important to avoid exponential blowup with nested
-                # if/else expressions: https://github.com/python/mypy/issues/9591
-                # TODO: would checking for is_proper_subtype also work and cover more cases?
-                else_type = full_context_else_type
-            else:
-                # Analyze the right branch in the context of the left
-                # branch's type.
-                else_type = self.analyze_cond_branch(
-                    else_map,
-                    e.else_expr,
-                    context=make_simplified_union([if_type_fallback, else_type_fallback]),
-                    allow_none_return=allow_none_return,
-                )
-
-            # In most cases using if_type as a context for right branch gives better inferred types.
-            # This is however not the case for literal types, so use the full context instead.
-            if is_literal_type_like(full_context_else_type) and not is_literal_type_like(
-                else_type
-            ):
-                else_type = full_context_else_type
+        if_type = self.analyze_cond_branch(
+            if_map, e.if_expr, context=ctx, allow_none_return=allow_none_return
+        )
+        else_type = self.analyze_cond_branch(
+            else_map, e.else_expr, context=ctx, allow_none_return=allow_none_return
+        )
 
         res: Type = make_simplified_union([if_type, else_type])
         if has_uninhabited_component(res) and not isinstance(
@@ -6325,7 +6214,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
         allow_none_return: bool = False,
         always_allow_any: bool = False,
         is_callee: bool = False,
-        context: list[Constraint | None] = None,
+        context: list[Constraint] | None = None,
     ) -> Type:
         """Type check a node in the given type context.  If allow_none_return
         is True and this expression is a call, allow it to return None.  This
@@ -6340,7 +6229,6 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
             t0 = time.perf_counter_ns()
             self.in_expression = True
             record_time = True
-
         self.type_context.append(type_context)
         self.constraint_context.append(context or [])
 
@@ -6361,14 +6249,14 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
             ctx_sol, _ = solve_constraints(ctx_vars, ctx_cons, minimize=True)
 
             # Skip types that did not resolve
-            ctx_sol = [None if has_uninhabited_component(t) else t for t in ctx_sol]
+            ctx_sol = filter_solution(ctx_sol)
 
             # apply the solution
             ctx_tvmap = {
                 v.id: ctx_sol[i] for i, v in enumerate(ctx_vars) if ctx_sol[i] is not None
             }
             self.type_context[-1] = expand_type(self.type_context[-1], ctx_tvmap)
-        type_context = self.type_context[-1]
+            type_context = self.type_context[-1]
 
         old_is_callee = self.is_callee
         self.is_callee = is_callee
@@ -7123,6 +7011,27 @@ def is_type_type_context(context: Type | None) -> bool:
     if isinstance(context, UnionType):
         return any(is_type_type_context(item) for item in context.items)
     return False
+
+
+def is_solution(t: Type | None) -> bool:
+    """Whether t is a proper solution."""
+    return not (
+        t is None
+        or isinstance(get_proper_type(t), UninhabitedType)  # uninhabited types are not solutions
+        or has_erased_component(t)  # list[<erased>] is not a solution
+        # note: list[Never] is inhabited and can be a solution
+    )
+
+
+def filter_solution(args: list[Type | None]) -> list[Type | None]:
+    r"""Filter out non-solutions containing "erased" or "uninhabited"."""
+    return [arg if is_solution(arg) else None for arg in args]
+
+
+def forget_last_known_value(t: Type, /) -> Type:
+    """Forget the last known value of a type."""
+    p_t = get_proper_type(t)
+    return p_t.copy_modified(last_known_value=None) if isinstance(p_t, Instance) else p_t
 
 
 # –

@@ -2139,18 +2139,18 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
             if isinstance(t, TypeVarType) and t.values
         ]
 
-        # print(
-        #     f"\n=== DEBUG ============================"
-        #     f"\ninfer_function_type_arguments result: "
-        #     f"\n\t{callee_type=}"
-        #     f"\n\t{callee_type.special_sig=}"
-        #     f"\n\t{self.type_context=}"
-        #     f"\n\t{self.constraint_context=}"
-        #     f"\n\t{naive_constraints=}"
-        #     f"\n\t{outer_constraints=}"
-        #     f"\n\t{outer_solution=}"
-        #     f"\n\t{outer_callee=}"
-        # )
+        show(
+            f"\n=== DEBUG ============================"
+            f"\ninfer_function_type_arguments result: "
+            f"\n\t{callee_type=}"
+            f"\n\t{callee_type.special_sig=}"
+            f"\n\t{self.type_context=}"
+            f"\n\t{self.constraint_context=}"
+            f"\n\t{naive_constraints=}"
+            f"\n\t{outer_constraints=}"
+            f"\n\t{outer_solution=}"
+            f"\n\t{outer_callee=}"
+        )
 
         if self.chk.in_checked_function():
             # Disable type errors during type inference. There may be errors
@@ -2295,29 +2295,29 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                             message_registry.KEYWORD_ARGUMENT_REQUIRES_STR_KEY_TYPE, context
                         )
 
-                # print(
-                #     f"\n=== DEBUG ============================"
-                #     f"\ninfer_function_type_arguments result: "
-                #     f"\n\t{callee_type=}"
-                #     f"\n\t{callee_type.special_sig=}"
-                #     f"\n\t{self.type_context=}"
-                #     f"\n\t{self.constraint_context=}"
-                #     f"\n\t{arg_types=}"
-                #     f"\n\t{pass1_args=}"
-                #     f"\n\t{outer_callee=}"
-                #     f"\n\t{outer_constraints=}"
-                #     f"\n\t{inner_constraints=}"
-                #     f"\n\t{naive_constraints=}"
-                #     f"\n\t{joint_constraints=}"
-                #     f"\n\t{outer_solution=}"
-                #     f"\n\t{inner_solution=}"
-                #     f"\n\t{joint_solution=}"
-                #     f"\n\t{joint_callee=}"
-                #     f"\n\t{use_joint=}"
-                #     f"\n\t{inferred_args=}"
-                #     f"\n"
-                #     f"\n\tresult={self.apply_generic_arguments(callee_type, inferred_args, context, skip_unsatisfied=True)}",
-                # )
+                show(
+                    f"\n=== DEBUG ============================"
+                    f"\ninfer_function_type_arguments result: "
+                    f"\n\t{callee_type=}"
+                    f"\n\t{callee_type.special_sig=}"
+                    f"\n\t{self.type_context=}"
+                    f"\n\t{self.constraint_context=}"
+                    f"\n\t{arg_types=}"
+                    f"\n\t{pass1_args=}"
+                    f"\n\t{outer_callee=}"
+                    f"\n\t{outer_constraints=}"
+                    f"\n\t{inner_constraints=}"
+                    f"\n\t{naive_constraints=}"
+                    f"\n\t{joint_constraints=}"
+                    f"\n\t{outer_solution=}"
+                    f"\n\t{inner_solution=}"
+                    f"\n\t{joint_solution=}"
+                    f"\n\t{joint_callee=}"
+                    f"\n\t{use_joint=}"
+                    f"\n\t{inferred_args=}"
+                    f"\n"
+                    f"\n\tresult={self.apply_generic_arguments(callee_type, inferred_args, context, skip_unsatisfied=True)}"
+                )
 
                 if use_joint:
                     inferred_args = inferred_args
@@ -2361,10 +2361,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                         allow_polymorphic=False,
                         minimize=True,
                     )
-                    # print(
-                    #     f"Two stage inference: "
-                    #     f"\n\t{callee_type=}\n\t{inferred_args=}"
-                    # )
+                    show(f"Two stage inference: \n\t{callee_type=}\n\t{inferred_args=}")
                     # inferred_args = [
                     #     None if has_uninhabited_component(arg) or has_erased_component(arg) else arg
                     #     for arg in inferred_args
@@ -2445,7 +2442,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                     a is not None and not isinstance(get_proper_type(a), UninhabitedType)
                     for a in poly_inferred_args
                 ):
-                    # print(f"\n\tTriggered polymorphic inference: {applied=}")
+                    show(f"\n\tTriggered polymorphic inference: {applied=}")
                     freeze_all_type_vars(applied)
                     return applied
                 # If it didn't work, erase free variables as uninhabited, to avoid confusing errors.
@@ -2469,10 +2466,10 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
         # inferred_args = [
         #     None if isinstance(arg, UninhabitedType) else arg for arg in inferred_args
         # ]
-        # print(
-        #     f"\tfinal_args={inferred_args}"
-        #     f"\tfinal_result={self.apply_inferred_arguments(callee_type, inferred_args, context)}"
-        # )
+        show(
+            f"\tfinal_args={inferred_args}"
+            f"\tfinal_result={self.apply_inferred_arguments(callee_type, inferred_args, context)}"
+        )
 
         return self.apply_inferred_arguments(callee_type, inferred_args, context)
 
@@ -7117,3 +7114,8 @@ def is_type_type_context(context: Type | None) -> bool:
     if isinstance(context, UnionType):
         return any(is_type_type_context(item) for item in context.items)
     return False
+
+
+def show(*args, **kwargs) -> None:
+    if False:
+        print(*args, **kwargs)

@@ -32,7 +32,6 @@ from mypy.expandtype import (
     expand_type_by_instance,
     freshen_all_functions_type_vars,
     freshen_function_type_vars,
-    get_freshened_tvar_mapping,
 )
 from mypy.infer import ArgumentInferContext, infer_function_type_arguments
 from mypy.literals import literal
@@ -235,7 +234,6 @@ OVERLAPPING_BYTES_ALLOWLIST: Final = {
     "builtins.memoryview",
 }
 
-HACKS: bool = False
 PREFER_INNER_OVER_OUTER: bool = False
 SHOW: bool = False
 
@@ -1787,23 +1785,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
             need_refresh = any(
                 isinstance(v, (ParamSpecType, TypeVarTupleType)) for v in callee.variables
             )
-            if HACKS:
-                tvmap = get_freshened_tvar_mapping(callee)
-                # apply the new tvars (to callee and context!)
-                callee = expand_type(callee, tvmap).copy_modified(variables=tvmap.values())
-                # update the constraints with the new tvars.
-                self.constraint_context[-1] = [
-                    Constraint(
-                        tvmap.get(c.type_var, c.original_type_var),
-                        c.op,
-                        expand_type(c.target, tvmap),
-                    )
-                    for c in self.constraint_context[-1]
-                ]
-                if self.type_context[-1] is not None:
-                    self.type_context[-1] = expand_type(self.type_context[-1], tvmap)
-            else:
-                callee = freshen_function_type_vars(callee)
+            callee = freshen_function_type_vars(callee)
 
             callee = self.infer_function_type_arguments(
                 callee, args, arg_kinds, arg_names, formal_to_actual, need_refresh, context
@@ -2255,27 +2237,6 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                     inferred_args = inner_solution
                 else:
                     inferred_args = outer_solution
-
-                # if (
-                #     callee_type.special_sig == "dict"
-                #     and len(inferred_args) == 2
-                #     and (ARG_NAMED in arg_kinds or ARG_STAR2 in arg_kinds)
-                # ):
-                #     # HACK: Infer str key type for dict(...) with keyword args. The type system
-                #     #       can't represent this so we special case it, as this is a pretty common
-                #     #       thing. This doesn't quite work with all possible subclasses of dict
-                #     #       if they shuffle type variables around, as we assume that there is a 1-1
-                #     #       correspondence with dict type variables. This is a marginal issue and
-                #     #       a little tricky to fix so it's left unfixed for now.
-                #     first_arg = get_proper_type(inferred_args[0])
-                #     if first_arg is None or isinstance(first_arg, UninhabitedType):
-                #         inferred_args[0] = self.named_type("builtins.str")
-                #     elif not first_arg or not is_subtype(
-                #         self.named_type("builtins.str"), first_arg
-                #     ):
-                #         self.chk.fail(
-                #             message_registry.KEYWORD_ARGUMENT_REQUIRES_STR_KEY_TYPE, context
-                #         )
 
                 show(
                     f"\n=== DEBUG ============================"
@@ -5374,23 +5335,6 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
             upper_bound=self.object_type(),
             default=AnyType(TypeOfAny.from_omitted_generics),
         )
-
-        if HACKS:
-            if self.type_context[-1] is not None:
-                new_type = self.chk.named_generic_type(fullname, [tv])
-                ctx_vars = get_type_vars(self.type_context[-1])
-                ctx_cons = self.constraint_context[-1]
-                ctx_sol, _ = solve_constraints(ctx_vars, ctx_cons)
-                # apply the solution
-                ctx_tvmap = {
-                    v.id: ctx_sol[i] for i, v in enumerate(ctx_vars) if ctx_sol[i] is not None
-                }
-                self.type_context[-1] = expand_type(self.type_context[-1], ctx_tvmap)
-                outer_constraints = infer_constraints(new_type, self.type_context[-1], SUBTYPE_OF)
-                outer_solution, _ = solve_constraints([tv], outer_constraints)
-                tvmap = {tv.id: outer_solution[0]}
-                self.constraint_context[-1] = outer_constraints
-
         constructor = CallableType(
             [tv],
             [nodes.ARG_STAR],
@@ -6253,32 +6197,6 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
             record_time = True
         self.type_context.append(type_context)
         self.constraint_context.append(constraints or [])
-
-        # fix the type context using the contextual constraints
-        if HACKS and type_context is not None:
-            # compute solved outer context.
-            ctx_vars = get_type_vars(self.type_context[-1])
-            ctx_cons = self.constraint_context[-1]
-
-            # add trivial constraints:
-            # naive_constraints = [
-            #     Constraint(t, SUBTYPE_OF, t.upper_bound)
-            #     for t in ctx_vars
-            #     if isinstance(t, TypeVarType)
-            # ]
-            # ctx_cons += naive_constraints
-
-            ctx_sol, _ = solve_constraints(ctx_vars, ctx_cons, minimize=True)
-
-            # Skip types that did not resolve
-            ctx_sol = filter_solution(ctx_sol)
-
-            # apply the solution
-            ctx_tvmap = {
-                v.id: ctx_sol[i] for i, v in enumerate(ctx_vars) if ctx_sol[i] is not None
-            }
-            self.type_context[-1] = expand_type(self.type_context[-1], ctx_tvmap)
-            type_context = self.type_context[-1]
 
         old_is_callee = self.is_callee
         self.is_callee = is_callee

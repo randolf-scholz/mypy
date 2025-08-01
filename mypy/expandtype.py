@@ -137,16 +137,6 @@ def freshen_function_type_vars(callee: F) -> F:
         return cast(F, fresh_overload)
 
 
-def get_freshened_tvar_mapping(callee: CallableType) -> dict[TypeVarId, Type]:
-    """Substitute fresh type variables for generic function type variables."""
-    assert isinstance(callee, CallableType)
-    tvmap: dict[TypeVarId, Type] = {}
-    for v in callee.variables:
-        tv = v.new_unification_variable(v)
-        tvmap[v.id] = tv
-    return tvmap
-
-
 class HasGenericCallable(BoolTypeQuery):
     def __init__(self) -> None:
         super().__init__(ANY_STRATEGY)

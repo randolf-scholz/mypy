@@ -440,13 +440,14 @@ def f(x: int) -> None: pass
 def g(x: int, y: str) -> None: pass
 
 reveal_type(register(lambda: f(1)))  # N: Revealed type is "def ()"
-reveal_type(register(lambda x: f(x), x=1))  # N: Revealed type is "def (x: Literal[1]?)"
+reveal_type(register(lambda x: f(x), x=1))  # N: Revealed type is "def (x: builtins.int)"
 register(lambda x: f(x))  # E: Cannot infer type of lambda \
                           # E: Argument 1 to "register" has incompatible type "Callable[[Any], None]"; expected "Callable[[], None]"
 register(lambda x: f(x), y=1)  # E: Argument 1 to "register" has incompatible type "Callable[[Arg(int, 'x')], None]"; expected "Callable[[Arg(int, 'y')], None]"
-reveal_type(register(lambda x: f(x), 1))  # N: Revealed type is "def (Literal[1]?)"
-reveal_type(register(lambda x, y: g(x, y), 1, "a"))  # N: Revealed type is "def (Literal[1]?, Literal['a']?)"
-reveal_type(register(lambda x, y: g(x, y), 1, y="a"))  # N: Revealed type is "def (Literal[1]?, y: Literal['a']?)"
+reveal_type(register(lambda x: f(x), 1))  # N: Revealed type is "def (builtins.int)"
+reveal_type(register(lambda x, y: g(x, y), 1, "a"))  # N: Revealed type is "def (builtins.int, builtins.str)"
+reveal_type(register(lambda x, y: g(x, y), 1, y="a"))  # N: Revealed type is "def (builtins.int, y: builtins.str)"
+
 [builtins fixtures/dict.pyi]
 
 [case testParamSpecInvalidCalls]
@@ -1675,8 +1676,8 @@ class Foo(Generic[P]):
     def call(self, *args: P.args, **kwargs: P.kwargs) -> None: ...
 def test(*args: P.args, **kwargs: P.kwargs) -> Foo[P]: ...
 
-reveal_type(test(1, 2))  # N: Revealed type is "__main__.Foo[[Literal[1]?, Literal[2]?]]"
-reveal_type(test(x=1, y=2))  # N: Revealed type is "__main__.Foo[[x: Literal[1]?, y: Literal[2]?]]"
+reveal_type(test(1, 2))  # N: Revealed type is "__main__.Foo[[builtins.int, builtins.int]]"
+reveal_type(test(x=1, y=2))  # N: Revealed type is "__main__.Foo[[x: builtins.int, y: builtins.int]]"
 ints = [1, 2, 3]
 reveal_type(test(*ints))  # N: Revealed type is "__main__.Foo[[*builtins.int]]"
 [builtins fixtures/paramspec.pyi]

@@ -20,6 +20,7 @@ from mypy.checkmember import analyze_member_access, has_operator
 from mypy.checkstrformat import StringFormatterChecker
 from mypy.constraints import (
     SUBTYPE_OF,
+    SUPERTYPE_OF,
     Constraint,
     infer_constraints,
     infer_constraints_for_callable,
@@ -2187,10 +2188,24 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                     formal_to_actual,
                     context=self.argument_infer_context(),
                 )
+                inner_upper, inner_lower = get_upper_and_lower(_inner_constraints)
+                # inner_upper = [
+                #     Constraint(c.original_type_var, c.op, forget_last_known_value(c.target))
+                #     # Constraint(c.original_type_var, c.op, use_last_known_value(c.target))
+                #     for c in inner_upper
+                # ]
+                # inner_lower = [
+                #     # Constraint(c.original_type_var, c.op, forget_last_known_value(c.target))
+                #     Constraint(c.original_type_var, c.op, use_last_known_value(c.target))
+                #     for c in inner_lower
+                # ]
+                inner_constraints = inner_upper + inner_lower
+
                 # HACK: convert "Literal?" constraints to their non-literal versions.
                 # relevant for `testLiteral*` tests.
                 inner_constraints = [
                     Constraint(c.original_type_var, c.op, forget_last_known_value(c.target))
+                    # Constraint(c.original_type_var, c.op, use_last_known_value(c.target))
                     for c in _inner_constraints
                 ]
                 inner_solution, _ = solve_constraints(
@@ -2347,6 +2362,15 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                     need_refresh,
                     context,
                 )
+                show(
+                    f"\n=== DEBUG ============================"
+                    f"\ninfer_function_type_arguments_pass2 result: "
+                    f"\n\t{callee_type=}"
+                    f"\n\t{callee_type.special_sig=}"
+                    f"\n\t{self.type_context=}"
+                    f"\n\t{self.constraint_context=}"
+                    f"\n\t{inferred_args=}"
+                )
 
             if (
                 callee_type.special_sig == "dict"
@@ -2399,17 +2423,12 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                 poly_callee_type = self.apply_generic_arguments(
                     callee_type, poly_inferred_args, context
                 )
+                show(f"\n\t{poly_inferred_args=}\n\t{free_vars=}\n\t{poly_callee_type=}")
                 # Try applying inferred polymorphic type if possible, e.g. Callable[[T], T] can
                 # be interpreted as def [T] (T) -> T, but dict[T, T] cannot be expressed.
                 applied = applytype.apply_poly(poly_callee_type, free_vars)
                 if applied is not None and all(is_solution(a) for a in poly_inferred_args):
-                    show(
-                        f"\nTriggered polymorphic inference:"
-                        f"\n\t{poly_callee_type=}"
-                        f"\n\t{poly_inferred_args=}"
-                        f"\n\t{free_vars=}"
-                        f"\n\t{applied=}"
-                    )
+                    show(f"\nTriggered polymorphic inference:\n\t{applied=}")
                     freeze_all_type_vars(applied)
                     return applied
                 # If it didn't work, erase free variables as uninhabited, to avoid confusing errors.
@@ -7037,7 +7056,31 @@ def forget_last_known_value(t: Type, /) -> Type:
     return p_t.copy_modified(last_known_value=None) if isinstance(p_t, Instance) else p_t
 
 
+def use_last_known_value(t: Type, /) -> Type:
+    """Use the last known value of a type, if it has one."""
+    p_t = get_proper_type(t)
+    if isinstance(p_t, Instance) and p_t.last_known_value is not None:
+        return p_t.last_known_value
+    return t  # No last known value, return the original type unchanged
+
+
 # –
+
+
+def get_upper_and_lower(
+    constraints: list[Constraint],
+) -> tuple[list[Constraint], list[Constraint]]:
+    """Get upper and lower bounds from a list of constraints."""
+    upper = []
+    lower = []
+    for constraint in constraints:
+        if constraint.op == SUBTYPE_OF:
+            upper.append(constraint)
+        elif constraint.op == SUPERTYPE_OF:
+            lower.append(constraint)
+        else:
+            raise ValueError(f"Unexpected constraint operator: {constraint.op}")
+    return upper, lower
 
 
 def show(*args, **kwargs) -> None:

@@ -914,7 +914,7 @@ def f[*Ts](t: tuple[*Ts]) -> tuple[*Ts]:
     reveal_type(t)  # N: Revealed type is "tuple[Unpack[Ts`-1]]"
     return t
 
-reveal_type(f((1, 'x')))  # N: Revealed type is "tuple[Literal[1]?, Literal['x']?]"
+reveal_type(f((1, 'x')))  # N: Revealed type is "tuple[builtins.int, builtins.str]"
 a: tuple[int, ...]
 reveal_type(f(a))  # N: Revealed type is "builtins.tuple[builtins.int, ...]"
 

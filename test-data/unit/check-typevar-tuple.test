@@ -426,7 +426,6 @@ with_prefix_suffix(*bad_t)  # E: Too few arguments for "with_prefix_suffix"
 
 def foo(*args: Unpack[Ts]) -> None:
     reveal_type(with_prefix_suffix(True, "bar", *args, 5))  # N: Revealed type is "tuple[builtins.bool, builtins.str, Unpack[Ts`-1], builtins.int]"
-
 [builtins fixtures/tuple.pyi]
 
 [case testTypeVarTuplePep646TypeVarStarArgsFixedLengthTuple]

@@ -2960,18 +2960,21 @@ def test(b: bool) -> None:
 [builtins fixtures/tuple.pyi]
 
 [case testListLiteralTernary]
+# gh-19534
 def test(b: bool) -> None:
     l = [1] if b else ["a"]
     reveal_type(l)  # N: Revealed type is "Union[builtins.list[builtins.int], builtins.list[builtins.str]]"
 [builtins fixtures/list.pyi]
 
 [case testSetLiteralTernary]
+# gh-19534
 def test(b: bool) -> None:
     s = {1} if b else {"a"}
     reveal_type(s)  # N: Revealed type is "Union[builtins.set[builtins.int], builtins.set[builtins.str]]"
 [builtins fixtures/set.pyi]
 
 [case testDictLiteralTernary]
+# gh-19534
 def test(b: bool) -> None:
     d = {1:1} if "" else {"a": "a"}
     reveal_type(d)  # N: Revealed type is "Union[builtins.dict[builtins.int, builtins.int], builtins.dict[builtins.str, builtins.str]]"

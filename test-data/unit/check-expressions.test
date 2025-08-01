@@ -424,6 +424,7 @@ class Bar[U]:
 
 
 [case testBinaryOperatorContext7]
+# gh-5971
 from typing import TypeVar, Generic, Union, Any
 
 T = TypeVar('T')
@@ -543,6 +544,7 @@ def test(a: Vec[int], c: Vec[Any]) -> None:
     w6: Vec[object] = id_(id_(c + a))
 
 [case testBinaryOperatorContext11]
+# gh-5971
 # flags: --python-version 3.12
 from typing import Any
 

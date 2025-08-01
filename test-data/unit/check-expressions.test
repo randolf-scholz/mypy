@@ -494,11 +494,11 @@ def id_[T](x: Vec[T]) -> Vec[T]: ...
 
 def test(a: Vec[int], b: Vec[str]) -> None:
     y1: Vec[object] = a + b  # E: Incompatible types in assignment (expression has type "Vec[Union[int, str]]", variable has type "Vec[object]")
-    y2: Vec[object] = b + a  # E: Incompatible types in assignment (expression has type "Vec[Union[int, str]]", variable has type "Vec[object]")
+    y2: Vec[object] = b + a  # E: Incompatible types in assignment (expression has type "Vec[Union[str, int]]", variable has type "Vec[object]")
     y3: Vec[object] = id_(a + b)  # E: Incompatible types in assignment (expression has type "Vec[Union[int, str]]", variable has type "Vec[object]")
-    y4: Vec[object] = id_(b + a)  # E: Incompatible types in assignment (expression has type "Vec[Union[int, str]]", variable has type "Vec[object]")
+    y4: Vec[object] = id_(b + a)  # E: Incompatible types in assignment (expression has type "Vec[Union[str, int]]", variable has type "Vec[object]")
     y5: Vec[object] = id_(id_(a + b))  # E: Incompatible types in assignment (expression has type "Vec[Union[int, str]]", variable has type "Vec[object]")
-    y6: Vec[object] = id_(id_(b + a))  # E: Incompatible types in assignment (expression has type "Vec[Union[int, str]]", variable has type "Vec[object]")
+    y6: Vec[object] = id_(id_(b + a))  # E: Incompatible types in assignment (expression has type "Vec[Union[str, int]]", variable has type "Vec[object]")
 
 
 [case testBinaryOperatorContextAnyToUnion]

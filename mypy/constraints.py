@@ -1360,6 +1360,7 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
             for item_name, template_item_type, actual_item_type in template.zip(actual):
                 # Value type is invariant, so irrespective of the direction,
                 # we constrain both above and below.
+                # Fixes testTypedDictWideContext
                 res.extend(infer_constraints(template_item_type, actual_item_type, SUBTYPE_OF))
                 res.extend(infer_constraints(template_item_type, actual_item_type, SUPERTYPE_OF))
             return res

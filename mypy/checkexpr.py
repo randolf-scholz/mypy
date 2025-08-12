@@ -25,7 +25,12 @@ from mypy.constraints import (
     infer_constraints,
     infer_constraints_for_callable,
 )
-from mypy.erasetype import erase_type, remove_instance_last_known_values, replace_meta_vars
+from mypy.erasetype import (
+    erase_type,
+    remove_instance_last_known_values,
+    replace_meta_vars,
+    replace_typevar,
+)
 from mypy.errors import ErrorInfo, ErrorWatcher, report_internal_error
 from mypy.expandtype import (
     expand_type,
@@ -45,6 +50,8 @@ from mypy.nodes import (
     ARG_POS,
     ARG_STAR,
     ARG_STAR2,
+    CONTRAVARIANT,
+    COVARIANT,
     IMPLICITLY_ABSTRACT,
     LAMBDA_NAME,
     LITERAL_TYPE,
@@ -122,6 +129,7 @@ from mypy.solve import solve_constraints
 from mypy.state import state
 from mypy.subtypes import (
     find_member,
+    infer_variance_in_expr,
     is_equivalent,
     is_same_type,
     is_subtype,
@@ -1612,7 +1620,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                     if overloaded_result is not None:
                         return overloaded_result
 
-            return self.check_callable_call(
+            result = self.check_callable_call(
                 callee,
                 args,
                 arg_kinds,
@@ -1622,6 +1630,17 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                 callable_name,
                 object_type,
             )
+            _show(
+                f"\n=== RESULT ==================="
+                f"\n\t{result[1]}"
+                f"\n\tret_type={result[0]}"
+                f"\n\tcallee={callee}"
+                f"\n\targs={args} "
+                f"\n\targ_kinds={arg_kinds}"
+            )
+
+            return result
+
         elif isinstance(callee, Overloaded):
             return self.check_overload_call(
                 callee, args, arg_kinds, arg_names, callable_name, object_type, context
@@ -1790,7 +1809,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
             if HACKS:
                 tvmap = get_freshened_tvar_mapping(callee)
                 # apply the new tvars (to callee and context!)
-                callee = expand_type(callee, tvmap).copy_modified(variables=tvmap.values())
+                callee = expand_type(callee, tvmap).copy_modified(variables=list(tvmap.values()))
                 # update the constraints with the new tvars.
                 self.constraint_context[-1] = [
                     Constraint(
@@ -2040,17 +2059,17 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
         # and they are not potential results; thus we replace them with the
         # special ErasedType type. On the other hand, class type variables are
         # valid results.
-        erased_ctx = get_proper_type(replace_meta_vars(ctx, ErasedType()))
+        proper_ctx = get_proper_type(ctx)
         proper_ret = get_proper_type(callee.ret_type)
-        if isinstance(proper_ret, UnionType) and isinstance(erased_ctx, UnionType):
+        if isinstance(proper_ret, UnionType) and isinstance(proper_ctx, UnionType):
             # If both the context and the return type are unions, we simplify shared items
             #   e.g.  T | None <: int | None  =>  T <: int
             #   since the former would infer T <: int | None.
             #   whereas the latter would infer the more precise T <: int.
-            new_ret = [val for val in proper_ret.items if val not in erased_ctx.items]
-            new_ctx = [val for val in erased_ctx.items if val not in proper_ret.items]
+            new_ret = [val for val in proper_ret.items if val not in proper_ctx.items]
+            new_ctx = [val for val in proper_ctx.items if val not in proper_ret.items]
             proper_ret = make_simplified_union(new_ret)
-            erased_ctx = make_simplified_union(new_ctx)
+            proper_ctx = make_simplified_union(new_ctx)
             #
             # TODO: Instead of this hack and the one below, we need to use outer and
             # inner contexts at the same time. This is however not easy because of two
@@ -2092,7 +2111,36 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
             if not is_generic_instance(ctx) and not is_literal_type_like(ctx):
                 return []
 
-        return infer_constraints(proper_ret, erased_ctx, SUBTYPE_OF)
+        NEW_CODE: bool = True
+        if NEW_CODE:
+            object_type = self.named_type("builtins.object")
+            ctx = proper_ctx
+            tvars = get_all_type_vars(ctx)
+            for tvar in tvars:
+                if not tvar.id.is_meta_var():
+                    continue
+
+                if isinstance(tvar, TypeVarType):
+                    variance = infer_variance_in_expr(ctx, tvar)
+                    if variance == COVARIANT:
+                        # If the upper bound is just object, erase it instead.
+                        # otherwise the solver may infer too general type
+                        if is_same_type(tvar.upper_bound, object_type):
+                            ctx = replace_typevar(ctx, tvar.id, ErasedType())
+                        else:
+                            # proper_ctx = expand_type(proper_ctx, {tvar.id: tvar.upper_bound})
+                            ctx = replace_typevar(ctx, tvar.id, tvar.upper_bound)
+                    elif variance == CONTRAVARIANT:
+                        # proper_ctx = expand_type(proper_ctx, {tvar.id: UninhabitedType()})
+                        ctx = replace_typevar(ctx, tvar.id, UninhabitedType())
+                    else:
+                        ctx = replace_typevar(ctx, tvar.id, ErasedType())
+                else:
+                    ctx = replace_typevar(ctx, tvar.id, ErasedType())
+            return infer_constraints(proper_ret, ctx, SUBTYPE_OF)
+        else:
+            erased_ctx = get_proper_type(replace_meta_vars(ctx, ErasedType()))
+            return infer_constraints(proper_ret, erased_ctx, SUBTYPE_OF)
 
     def infer_function_type_arguments(
         self,
@@ -2138,10 +2186,11 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                 for t in callee_type.variables
                 if isinstance(t, TypeVarType) and t.values
             ]
+            # trivial_constraints = []
 
-            show(
+            _show(
                 f"\n=== DEBUG ============================"
-                f"\ninfer_function_type_arguments result: "
+                f"\ninfer_function_type_arguments: "
                 f"\n\t{callee_type=}"
                 f"\n\t{callee_type.special_sig=}"
                 f"\n\t{self.type_context=}"
@@ -2277,9 +2326,8 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                 #             message_registry.KEYWORD_ARGUMENT_REQUIRES_STR_KEY_TYPE, context
                 #         )
 
-                show(
+                _show(
                     f"\n=== DEBUG ============================"
-                    f"\ninfer_function_type_arguments result: "
                     f"\n\t{callee_type=}"
                     f"\n\t{callee_type.special_sig=}"
                     f"\n\t{self.type_context=}"
@@ -2320,7 +2368,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                         allow_polymorphic=False,
                     )
                     inferred_args = filter_solution(new_outer_solution)
-                    show(f"Two stage inference: \n\t{callee_type=}\n\t{inferred_args=}")
+                    _show(f"Two stage inference: \n\t{callee_type=}\n\t{inferred_args=}")
                 else:
                     # If we cannot use the joint solution, fall back to a 2 stage inference,
                     # by first applying the outer solution, and then inferring the inner again
@@ -2346,7 +2394,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                         minimize=True,
                     )
                     inferred_args = filter_solution(new_inner_solution)
-                    show(f"Two stage inference: \n\t{callee_type=}\n\t{inferred_args=}")
+                    _show(f"Two stage inference: \n\t{callee_type=}\n\t{inferred_args=}")
             else:  # END NEW CODE
                 pass
 
@@ -2362,9 +2410,9 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                     need_refresh,
                     context,
                 )
-                show(
+                _show(
                     f"\n=== DEBUG ============================"
-                    f"\ninfer_function_type_arguments_pass2 result: "
+                    f"\nPASS2: "
                     f"\n\t{callee_type=}"
                     f"\n\t{callee_type.special_sig=}"
                     f"\n\t{self.type_context=}"
@@ -2423,12 +2471,12 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                 poly_callee_type = self.apply_generic_arguments(
                     callee_type, poly_inferred_args, context
                 )
-                show(f"\n\t{poly_inferred_args=}\n\t{free_vars=}\n\t{poly_callee_type=}")
+                _show(f"\n\t{poly_inferred_args=}\n\t{free_vars=}\n\t{poly_callee_type=}")
                 # Try applying inferred polymorphic type if possible, e.g. Callable[[T], T] can
                 # be interpreted as def [T] (T) -> T, but dict[T, T] cannot be expressed.
                 applied = applytype.apply_poly(poly_callee_type, free_vars)
                 if applied is not None and all(is_solution(a) for a in poly_inferred_args):
-                    show(f"\nTriggered polymorphic inference:\n\t{applied=}")
+                    _show(f"\nTriggered polymorphic inference:\n\t{applied=}")
                     freeze_all_type_vars(applied)
                     return applied
                 # If it didn't work, erase free variables as uninhabited, to avoid confusing errors.
@@ -2444,11 +2492,17 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                     )
                     for a in poly_inferred_args
                 ]
+                result = self.apply_inferred_arguments(callee_type, inferred_args, context)
+
+                _show(f"=== OUTPUT ============================result={result}")
+
+                return result
         else:
             # In dynamically typed functions use implicit 'Any' types for
             # type variables.
             inferred_args = [AnyType(TypeOfAny.unannotated)] * len(callee_type.variables)
-        return self.apply_inferred_arguments(callee_type, inferred_args, context)
+        result = self.apply_inferred_arguments(callee_type, inferred_args, context)
+        return result
 
     def infer_function_type_arguments_pass2(
         self,
@@ -5383,12 +5437,11 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                 ctx_sol, _ = solve_constraints(ctx_vars, ctx_cons)
                 # apply the solution
                 ctx_tvmap = {
-                    v.id: ctx_sol[i] for i, v in enumerate(ctx_vars) if ctx_sol[i] is not None
+                    v.id: sol for i, v in enumerate(ctx_vars) if (sol := ctx_sol[i]) is not None
                 }
                 self.type_context[-1] = expand_type(self.type_context[-1], ctx_tvmap)
                 outer_constraints = infer_constraints(new_type, self.type_context[-1], SUBTYPE_OF)
                 outer_solution, _ = solve_constraints([tv], outer_constraints)
-                tvmap = {tv.id: outer_solution[0]}
                 self.constraint_context[-1] = outer_constraints
 
         constructor = CallableType(
@@ -6257,7 +6310,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
         # fix the type context using the contextual constraints
         if HACKS and type_context is not None:
             # compute solved outer context.
-            ctx_vars = get_type_vars(self.type_context[-1])
+            ctx_vars = get_type_vars(type_context)
             ctx_cons = self.constraint_context[-1]
 
             # add trivial constraints:
@@ -6275,9 +6328,9 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
 
             # apply the solution
             ctx_tvmap = {
-                v.id: ctx_sol[i] for i, v in enumerate(ctx_vars) if ctx_sol[i] is not None
+                v.id: sol for i, v in enumerate(ctx_vars) if (sol := ctx_sol[i]) is not None
             }
-            self.type_context[-1] = expand_type(self.type_context[-1], ctx_tvmap)
+            self.type_context[-1] = expand_type(type_context, ctx_tvmap)
             type_context = self.type_context[-1]
 
         old_is_callee = self.is_callee
@@ -7083,6 +7136,6 @@ def get_upper_and_lower(
     return upper, lower
 
 
-def show(*args, **kwargs) -> None:
+def _show(*args, **kwargs) -> None:
     if SHOW:
         print(*args, **kwargs)

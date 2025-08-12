@@ -318,7 +318,7 @@ def solve_one(
 
     assert not (minimize and maximize)
 
-    if minimize:
+    if minimize:  # pick minimum solution
         if bottom is None and top is None:
             return None
         elif bottom is None:
@@ -335,6 +335,7 @@ def solve_one(
         elif bottom is None:
             candidate = top
         elif top is None:
+            assert p_bottom is not None
             candidate = object_or_any_from_type(p_bottom)
         elif is_subtype(bottom, top):
             candidate = top

@@ -36,6 +36,7 @@ from mypy.nodes import (
 )
 from mypy.options import Options
 from mypy.state import state
+from mypy.typeops import get_all_type_vars
 from mypy.types import (
     MYPYC_NATIVE_INT_NAMES,
     TUPLE_LIKE_INSTANCE_NAMES,
@@ -61,6 +62,7 @@ from mypy.types import (
     TypedDictType,
     TypeOfAny,
     TypeType,
+    TypeVarLikeType,
     TypeVarTupleType,
     TypeVarType,
     TypeVisitor,
@@ -2173,6 +2175,34 @@ def all_non_object_members(info: TypeInfo) -> set[str]:
     for base in info.mro[1:-1]:
         members.update(base.names)
     return members
+
+
+def infer_variance_in_expr(t: Type, tvar: TypeVarLikeType) -> int:
+    r"""Infer the variance of the ith type variable in a type expression.
+
+    Assume we have a constraint like `T <: TypeForm[S]`.
+    Assume `S` is bounded by `L <: S <: U`.
+
+    Then this method returns:
+
+    1. COVARIANT, if `T <: TypeForm[U]` implies `T <: TypeForm[S]`, i.e. `TypeForm[S] <: TypeForm[U]`
+    2. CONTRAVARIANT, if `T <: TypeForm[L]` implies `T <: TypeForm[S]`
+    3. INVARIANT, if neither of the above holds
+    """
+    # 1 get the upper bound
+    upper = tvar.upper_bound
+    lower = UninhabitedType()
+
+    # 0. If the type variable does not appear in the type expression, return INVARIANT.
+    if tvar not in get_all_type_vars(t):
+        return INVARIANT
+    # 1. test covariance:
+    if is_subtype(t, expand_type(t, {tvar.id: upper})):
+        return COVARIANT
+    # 2. test contravariance:
+    if is_subtype(expand_type(t, {tvar.id: lower}), t):
+        return CONTRAVARIANT
+    return INVARIANT
 
 
 def infer_variance(info: TypeInfo, i: int) -> bool:

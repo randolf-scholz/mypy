@@ -4367,8 +4367,9 @@ class TypeChecker(NodeVisitor[None], TypeCheckerSharedApi):
             types = [
                 self.check_lvalue(sub_expr)[0] or
                 # This type will be used as a context for further inference of rvalue,
-                # we put Uninhabited if there is no information available from lvalue.
-                UninhabitedType()
+                # we put AnyType if there is no information available from lvalue.
+                AnyType(TypeOfAny.unannotated)
+                # UninhabitedType() fails testInferenceNestedTuplesFromGenericIterable
                 for sub_expr in lvalue.items
             ]
             lvalue_type = TupleType(types, self.named_type("builtins.tuple"))

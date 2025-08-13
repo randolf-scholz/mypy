@@ -1166,9 +1166,9 @@ class TypeList(ProperType):
 
     items: list[Type]
 
-    def __init__(self, items: list[Type], line: int = -1, column: int = -1) -> None:
+    def __init__(self, items: Sequence[Type], line: int = -1, column: int = -1) -> None:
         super().__init__(line, column)
-        self.items = items
+        self.items = list(items)
 
     def accept(self, visitor: TypeVisitor[T]) -> T:
         assert isinstance(visitor, SyntheticTypeVisitor)
@@ -1190,7 +1190,8 @@ class UnpackType(ProperType):
     or unpacking * syntax.
 
     The inner type should be either a TypeVarTuple, or a variable length tuple.
-    In an exceptional case of callable star argument it can be a fixed length tuple.
+    In an exceptional case of callable star argument it can be a fixed length tuple or
+    ParamSpecType.
 
     Note: the above restrictions are only guaranteed by normalizations after semantic
     analysis, if your code needs to handle UnpackType *during* semantic analysis, it is
@@ -2723,7 +2724,7 @@ class TupleType(ProperType):
 
     def __init__(
         self,
-        items: list[Type],
+        items: Sequence[Type],
         fallback: Instance,
         line: int = -1,
         column: int = -1,
@@ -2731,7 +2732,7 @@ class TupleType(ProperType):
     ) -> None:
         super().__init__(line, column)
         self.partial_fallback = fallback
-        self.items = items
+        self.items = list(items)
         self.implicit = implicit
 
     def can_be_true_default(self) -> bool:
@@ -2873,6 +2874,87 @@ class TupleType(ProperType):
         else:
             slice_items = self.items[begin:end:stride]
         return TupleType(slice_items, fallback, self.line, self.column, self.implicit)
+
+    # TODO: Consider caching these properties.
+    @property
+    def flattened_items(self) -> list[Type]:
+        r"""Return a list of types for the items in this tuple (flattened).
+
+        Does not expand TypeAliases, except when they are appearing as tuples inside Unpack.
+        """
+        return flatten_nested_tuples(self.items)
+
+    @property
+    def unpack_index(self) -> int | None:
+        r"""The index of the Unpack in the tuple, or None if there is none."""
+        return find_unpack_in_list(self.flattened_items)
+
+    @property
+    def prefix(self) -> list[Type]:
+        r"""The prefix are all items before the first unpack."""
+        return self.flattened_items[: self.unpack_index]
+
+    @property
+    def suffix(self) -> list[Type]:
+        r"""The suffix are all items after the last unpack (or none, if no unpack exists)."""
+        unpack_index = self.unpack_index
+        if unpack_index is None:
+            return []
+        return self.flattened_items[unpack_index + 1 :]
+
+    @property
+    def unpack(self) -> UnpackType | None:
+        r"""The Unpack in the tuple, or None if there is none."""
+        unpack_index = self.unpack_index
+        if unpack_index is None:
+            return None
+        unpack = self.flattened_items[unpack_index]
+        assert isinstance(unpack, UnpackType)
+        return unpack
+
+    @property
+    def is_variadic(self) -> bool:
+        r"""The variadic item if the tuple has one Unpack, otherwise None."""
+        return self.unpack_index is not None
+
+    @property
+    def minimum_length(self) -> int:
+        r"""The minimum length of the tuple.
+
+        Note:
+            We assume that the variadic part has at least 0 items.
+            This assumption depends on the typing specification stating that
+            a tuple can have at most one unpack. If this is relaxed, then this
+            property may need to be changed. For example, currently
+            `tuple[int, *tuple[str, ...], int, *tuple[str, ...], int]` is illegal.
+            This tuple would have prefix `[int]` and suffix `[int]`,
+            but its minimum length is 3, not 2.
+        """
+        return len(self.prefix) + len(self.suffix)
+
+    def simplify(self) -> Type:
+        r"""Simplify a tuple type.
+
+        1. expand nested unpacks
+        2. if the tuple is a single unpack, return the unpacked type
+
+        Example:
+            tuple[*tuple[int, ...]] -> tuple[int, ...]
+            tuple[*Ts]              -> Ts
+            tuple[*tuple[int, str]] -> tuple[int, str]
+        """
+        flattened_items = self.flattened_items
+        if len(flattened_items) == 1:
+            first_item = get_proper_type(flattened_items[0])
+            if isinstance(first_item, UnpackType):
+                proper_unpacked = get_proper_type(first_item.type)
+                assert isinstance(
+                    proper_unpacked, (TupleType, Instance, TypeVarTupleType, ParamSpecType)
+                ), f"{proper_unpacked=}"
+                if isinstance(proper_unpacked, TupleType):
+                    return proper_unpacked.simplify()
+                return first_item.type
+        return self
 
 
 class TypedDictType(ProperType):
@@ -3363,6 +3445,19 @@ class UnionType(ProperType):
     @classmethod
     def read(cls, data: Buffer) -> UnionType:
         return UnionType(read_type_list(data), uses_pep604_syntax=read_bool(data))
+
+    @property
+    def proper_items(self) -> list[ProperType]:
+        """Return a list of proper types for the items in this union (flattened)."""
+        # similar to flatten_nested_unions, but expands type aliases
+        res = []
+        for typ in self.items:
+            p_t = get_proper_type(typ)
+            if isinstance(p_t, UnionType):
+                res.extend(p_t.proper_items)
+            else:
+                res.append(p_t)
+        return res
 
 
 class PartialType(ProperType):

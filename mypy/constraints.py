@@ -1014,7 +1014,7 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
                 if isinstance(item, UnpackType):
                     unpacked = get_proper_type(item.type)
                     if isinstance(unpacked, TypeVarTupleType):
-                        # Iterable[T] :> tuple[*Ts] => T :> Union[*Ts]
+                        # tuple[T, ...] :> tuple[*Ts] implies T :> Union[*Ts]
                         # Since Union[*Ts] is currently not available, use Any instead.
                         item = AnyType(TypeOfAny.from_omitted_generics)
                     else:

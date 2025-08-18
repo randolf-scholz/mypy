@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Callable, cast
-from typing_extensions import NewType, TypeGuard, TypeIs
+from typing_extensions import NewType, TypeAlias as _TypeAlias, TypeGuard, TypeIs
 
 from mypy import nodes
 from mypy.maptype import map_instance_to_supertype
@@ -29,11 +29,13 @@ from mypy.types import (
 )
 
 if TYPE_CHECKING:
-    from mypy.infer import ArgumentInferContext
+    from mypy.infer import ArgumentInferContext, IterableType, TupleInstanceType
 
 
-IterableType = NewType("IterableType", Instance)
-"""Represents an instance of `Iterable[T]`."""
+FiniteTupleType = NewType("FiniteTupleType", TupleType)
+"""Represents an instance of `tuple[T1, T2, ..., Tn]` with a finite number of items."""
+TupleLikeType: _TypeAlias = "TupleType | TypeVarTupleType | TupleInstanceType | FiniteTupleType"
+r"""Types that are considered tuples or tuple-like."""
 
 
 def map_actuals_to_formals(
@@ -220,7 +222,7 @@ class ArgTypeExpander:
             #    IterableType | TupleType | ParamSpecType | AnyType
             star_args_type = self.parse_star_args_type(actual_type)
 
-            if self.is_iterable_instance_type(star_args_type):
+            if self.context.is_tuple_instance_type(star_args_type):
                 return star_args_type.args[0]
             elif isinstance(star_args_type, TupleType):
                 # Get the next tuple item of a tuple *arg.
@@ -279,21 +281,6 @@ class ArgTypeExpander:
             # No translation for other kinds -- 1:1 mapping.
             return original_actual
 
-    def is_iterable(self, typ: Type) -> bool:
-        """Check if the type is an iterable, i.e. implements the Iterable Protocol."""
-        from mypy.subtypes import is_subtype
-
-        return is_subtype(typ, self.context.iterable_type)
-
-    def is_iterable_instance_type(self, typ: Type) -> TypeIs[IterableType]:
-        """Check if the type is an Iterable[T]."""
-        p_t = get_proper_type(typ)
-        return isinstance(p_t, Instance) and p_t.type == self.context.iterable_type.type
-
-    def _make_iterable_instance_type(self, arg: Type) -> IterableType:
-        value = Instance(self.context.iterable_type.type, [arg])
-        return cast(IterableType, value)
-
     def _solve_as_iterable(self, typ: Type) -> IterableType | AnyType:
         r"""Use the solver to cast a type as Iterable[T].
 
@@ -314,7 +301,7 @@ class ArgTypeExpander:
             upper_bound=AnyType(TypeOfAny.from_omitted_generics),
             default=AnyType(TypeOfAny.from_omitted_generics),
         )
-        target = self._make_iterable_instance_type(T)
+        target = self.context.make_iterable_instance_type(T)
         upcast_callable = CallableType(
             variables=[T],
             arg_types=[target],
@@ -331,7 +318,7 @@ class ArgTypeExpander:
 
         if sol is None:  # solving failed, return AnyType fallback
             return AnyType(TypeOfAny.from_error)
-        return self._make_iterable_instance_type(sol)
+        return self.context.make_iterable_instance_type(sol)
 
     def as_iterable_type(self, typ: Type) -> IterableType | AnyType:
         """Reinterpret a type as Iterable[T], or return AnyType if not possible.
@@ -340,21 +327,21 @@ class ArgTypeExpander:
         Otherwise, the upcasting is performed using the solver.
         """
         p_t = get_proper_type(typ)
-        if self.is_iterable_instance_type(p_t) or isinstance(p_t, AnyType):
+        if self.context.is_iterable_instance_type(p_t) or isinstance(p_t, AnyType):
             return p_t
         elif isinstance(p_t, UnionType):
             # If the type is a union, map each item to the iterable supertype.
             # the return the combined iterable type Iterable[A] | Iterable[B] -> Iterable[A | B]
             converted_types = [self.as_iterable_type(get_proper_type(item)) for item in p_t.items]
 
-            if any(not self.is_iterable_instance_type(it) for it in converted_types):
+            if any(not self.context.is_iterable_instance_type(it) for it in converted_types):
                 # if any item could not be interpreted as Iterable[T], we return AnyType
                 return AnyType(TypeOfAny.from_error)
             else:
                 # all items are iterable, return Iterable[T₁ | T₂ | ... | Tₙ]
-                iterable_types = cast(list[IterableType], converted_types)
+                iterable_types = cast("list[IterableType]", converted_types)
                 arg = make_simplified_union([it.args[0] for it in iterable_types])
-                return self._make_iterable_instance_type(arg)
+                return self.context.make_iterable_instance_type(arg)
         elif isinstance(p_t, TupleType):
             # maps tuple[A, B, C] -> Iterable[A | B | C]
             # note: proper_elements may contain UnpackType, for instance with
@@ -364,7 +351,7 @@ class ArgTypeExpander:
             for p_e in proper_elements:
                 if isinstance(p_e, UnpackType):
                     r = self.as_iterable_type(p_e)
-                    if self.is_iterable_instance_type(r):
+                    if self.context.is_iterable_instance_type(r):
                         args.append(r.args[0])
                     else:
                         # this *should* never happen, since UnpackType should
@@ -374,12 +361,12 @@ class ArgTypeExpander:
                         args.append(r)
                 else:
                     args.append(p_e)
-            return self._make_iterable_instance_type(make_simplified_union(args))
+            return self.context.make_iterable_instance_type(make_simplified_union(args))
         elif isinstance(p_t, UnpackType):
             return self.as_iterable_type(p_t.type)
         elif isinstance(p_t, (TypeVarType, TypeVarTupleType)):
             return self.as_iterable_type(p_t.upper_bound)
-        elif self.is_iterable(p_t):
+        elif self.context.is_iterable(p_t):
             # TODO: add a 'fast path' (needs measurement) that uses the map_instance_to_supertype
             #   mechanism? (Only if it works: gh-19662)
             return self._solve_as_iterable(p_t)
@@ -387,10 +374,10 @@ class ArgTypeExpander:
 
     def parse_star_args_type(
         self, typ: Type
-    ) -> TupleType | IterableType | ParamSpecType | AnyType:
+    ) -> TupleType | TupleInstanceType | ParamSpecType | AnyType:
         """Parse the type of a ``*args`` argument.
 
-        Returns one of TupleType, IterableType, ParamSpecType or AnyType.
+        Returns one of TupleType, TupleInstanceType, ParamSpecType or AnyType.
         Returns AnyType(TypeOfAny.from_error) if the type cannot be parsed or is invalid.
         """
         p_t = get_proper_type(typ)
@@ -402,39 +389,334 @@ class ArgTypeExpander:
         elif isinstance(p_t, UnionType):
             proper_items = [get_proper_type(t) for t in p_t.items]
             # consider 2 cases:
-            # 1. Union of equal sized tuples, e.g. tuple[A, B] | tuple[None, None]
-            #    In this case transform union of same-sized tuples into a tuple of unions
-            #    e.g. tuple[A, B] | tuple[None, None] -> tuple[A | None, B | None]
-            if is_equal_sized_tuples(proper_items):
 
-                tuple_args: list[Type] = [
-                    make_simplified_union(items) for items in zip(*(t.items for t in proper_items))
-                ]
-                actual_type = TupleType(
-                    tuple_args,
-                    # use Iterable[A | B | C] as the fallback type
-                    fallback=Instance(
-                        self.context.iterable_type.type, [UnionType.make_union(tuple_args)]
-                    ),
-                )
-                return actual_type
+            # 1. Union of tuple
+            if all(isinstance(t, TupleType) for t in proper_items):
+                proper_items = cast("list[TupleType]", proper_items)
+                return self.combine_tuple_types(proper_items)
             # 2. Union of iterable types, e.g. Iterable[A] | Iterable[B]
-            #    In this case return Iterable[A | B]
-            #    Note that this covers unions of differently sized tuples as well.
+            #    In this case return tuple[A | B, ...]
             else:
                 converted_types = [self.as_iterable_type(p_i) for p_i in proper_items]
-                if all(self.is_iterable_instance_type(it) for it in converted_types):
-                    # all items are iterable, return Iterable[T1 | T2 | ... | Tn]
-                    iterables = cast(list[IterableType], converted_types)
+                if all(self.context.is_iterable_instance_type(it) for it in converted_types):
+                    # all items are iterable, return tuple[T1 | T2 | ... | Tn, ...]
+                    iterables = cast("list[IterableType]", converted_types)
                     arg = make_simplified_union([it.args[0] for it in iterables])
-                    return self._make_iterable_instance_type(arg)
+                    return self.context.make_tuple_instance_type(arg)
                 else:
                     # some items in the union are not iterable, return AnyType
                     return AnyType(TypeOfAny.from_error)
-        elif self.is_iterable_instance_type(parsed := self.as_iterable_type(p_t)):
-            # in all other cases, we try to reinterpret the type as Iterable[T]
-            return parsed
-        return AnyType(TypeOfAny.from_error)
+        else:
+            parsed = self.as_iterable_type(p_t)
+            if self.context.is_iterable_instance_type(parsed):
+                return self.context.make_tuple_instance_type(parsed.args[0])
+            return AnyType(TypeOfAny.from_error)
+
+    def process_tuple_type(self, typ: TupleType) -> tuple[TupleType, TupleType, TupleType]:
+        r"""Split a tuple into 3 parts: head part, body part and tail part.
+
+        1. A head part which is the longest finite prefix of the tuple
+        2. A body part which covers all items from the first variable item to the last variable item
+        3. A tail part which is the longest finite suffix of the remaining tuple
+
+        Examples:
+            - tuple[int, str] -> (tuple[int, str], tuple[()], tuple[()])
+            - tuple[int, *tuple[int, ...]] -> (tuple[int], tuple[*tuple[int, ...]], tuple[()])
+            - tuple[*tuple[int, ...], int] -> (tuple[())], tuple[*tuple[int, ...]], tuple[int])
+            - tuple[int, *tuple[int, ...], int] -> (tuple[int], tuple[*tuple[int, ...]], tuple[int])
+            - tuple[int, *tuple[int, ...], str, *tuple[str, ...], int]
+              -> (head=tuple[int], variable=tuple[*tuple[int, ...], str, *tuple[str, ...]], tail=tuple[int])
+        """
+        head_items: list[Type] = []
+        tail_items: list[Type] = []
+        body_items: list[Type] = []
+
+        flattened_items = flatten_nested_tuples(typ.items)
+        generator = iter(flattened_items)
+
+        # determine the head part
+        for item in generator:
+            p_t = get_proper_type(item)
+            if isinstance(p_t, UnpackType):
+                body_items.append(item)
+                break
+            head_items.append(item)
+        # determine the body part
+        for item in generator:
+            p_t = get_proper_type(item)
+            if isinstance(p_t, UnpackType):
+                body_items.extend(tail_items)
+                body_items.append(item)
+                tail_items.clear()
+            else:
+                tail_items.append(item)
+
+        # construct the return
+        fallback = self.context.make_tuple_instance_type(AnyType(TypeOfAny.from_error))
+        head = TupleType(head_items, fallback=fallback)
+        body = TupleType(body_items, fallback=fallback)
+        tail = TupleType(tail_items, fallback=fallback)
+
+        return head, body, tail
+
+    def combine_tuple_types(self, types: Sequence[TupleType]) -> TupleType:
+        """Combine multiple tuple types into a single tuple type.
+
+        This creates an upper bound for the union of the input tuple types.
+        If all input tuples are of the same (real) size, so is the result.
+
+        Examples:
+            tuple[int, int], tuple[None, None]
+                -> tuple[int | None, int | None]
+
+            tuple[int, *tuple[int, ...], int],
+            tuple[None, *tuple[None, ...], None]
+                -> tuple[int | None, *tuple[int | None, ...], int | None]
+
+            tuple[int, *tuple[int, ...], str, *tuple[str, ...], int]
+            tuple[None, *tuple[None, ...], None]
+                -> tuple[int | None, *tuple[int | str | None, ...], int | None]
+        """
+        heads: list[TupleType]
+        bodies: list[TupleType]
+        tails: list[TupleType]
+        heads, bodies, tails = zip(*(self.process_tuple_type(typ) for typ in types))
+
+        head_items: list[Type] = []
+        body_items: list[Type] = []
+        tail_items: list[Type] = []
+
+        # 1. process all heads in parallel, stopping when one of the heads is exhausted
+        head_length = min(len(head.items) for head in heads)
+        for items in zip(*(head.items[:head_length] for head in heads)):
+            # append the union of the items to the head part
+            head_items.append(make_simplified_union(items))
+        # collect all the remaining head items from generators that were not exhausted
+        remaining_head_items = [item for head in heads for item in head.items[head_length:]]
+
+        # 2. process all tails in parallel, stopping when one of the tails is exhausted
+        tail_length = min(len(tail.items) for tail in tails)
+        for items in zip(*(tail.items[:tail_length] for tail in tails)):
+            # append the union of the items to the tail part
+            tail_items.append(make_simplified_union(items))
+        # collect all the remaining tail items from generators that were not exhausted
+        remaining_tail_items = [item for tail in tails for item in tail.items[tail_length:]]
+
+        # 3. process all bodies, coercing them into iterable types
+        for body in bodies:
+            if not body.items:
+                continue
+            parsed_body_type = self.as_iterable_type(body)
+            if isinstance(parsed_body_type, AnyType):
+                body_items.append(parsed_body_type)
+            else:  # Iterable[T]
+                body_items.append(parsed_body_type.args[0])
+        combined_items = remaining_head_items + body_items + remaining_tail_items
+
+        if combined_items:
+            variable_type = make_simplified_union(combined_items)
+            variable_part = self.context.make_tuple_instance_type(variable_type)
+            return TupleType(
+                [*head_items, UnpackType(variable_part), *tail_items],
+                fallback=self.context.tuple_type,
+            )
+        return TupleType([*head_items, *body_items], fallback=self.context.tuple_type)
+
+    def combine_finite_tuple_types(self, types: Sequence[FiniteTupleType]) -> TupleType:
+        """Combine multiple finite tuple types into a single tuple type.
+
+        The result is an upper bound for the union of the input tuple types.
+        If all input tuples are of the same size, so is the result.
+        If any input tuples have different sizes, the result will be a variable-length tuple.
+
+        Note:
+            We treat each input tuple as consisting of two parts:
+
+            1. The head part, which are the first n items of the tuple, where n is the minimal length
+            2. The tail part which are the remaining items of the tuple, if any.
+
+            The resulting tuple type will be of the form
+
+            tuple[T1, T2, ..., Tn, *tuple[U, ...]]
+
+            where each item `Tk` of the head part is the union of the item types of the input tuples,
+            and `U` is the union of all the item types of all the tail parts of each input tuple.
+
+        Examples:
+            tuple[int, int], tuple[None, None]           -> tuple[int | None, int | None]
+            tuple[str], tuple[str, int]                  -> tuple[str, *tuple[int, ...]]
+            tuple[str], tuple[str, str], tuple[int, int] -> tuple[str | int, *tuple[str | int, ...]]
+        """
+        if not types:
+            raise ValueError("Expected at least one type, got empty sequence")
+
+        # 1. get the flattened elements of each tuple
+        lengths = [get_real_tuple_length(tup) for tup in types]
+        flattened_tuples: list[list[Type]] = [flatten_nested_tuples(typ.items) for typ in types]
+        assert all(
+            len(flat_items) == length for length, flat_items in zip(lengths, flattened_tuples)
+        )
+        # 2. compute the lengths
+        minimal_length = min(lengths)
+        maximal_length = max(lengths)
+
+        # 3. compute the head part by union-ing element-wise
+        head_types = [
+            make_simplified_union([tuple_items[i] for tuple_items in flattened_tuples])
+            for i in range(minimal_length)
+        ]
+
+        # if no tail part return early
+        if minimal_length == maximal_length:
+            fallback = self.context.make_tuple_instance_type(AnyType(TypeOfAny.unannotated))
+            head_type = TupleType(head_types, fallback=fallback)
+            return head_type
+
+        # 4. compute the tail part by union-ing all the remaining elements
+        tail_type = make_simplified_union(
+            [
+                UnionType.make_union([*tuple_items[minimal_length:]])
+                for tuple_items in flattened_tuples
+            ]
+        )
+        # create the tail tuple type
+        tail_tuple = self.context.make_tuple_instance_type(tail_type)
+
+        # return head part + tail part
+        fallback = self.context.make_tuple_instance_type(
+            make_simplified_union([*head_types, tail_type])
+        )
+        result = TupleType([*head_types, UnpackType(tail_tuple)], fallback=fallback)
+        return result
+
+
+def normalize_finite_tuple_type(typ: FiniteTupleType) -> FiniteTupleType:
+    """Normalize a tuple type to a FiniteTupleType."""
+    return FiniteTupleType(flatten_nested_tuples(typ), fallback=typ.partial_fallback)
+
+
+def is_tuple_instance_type(typ: Type) -> TypeIs[TupleInstanceType]:
+    """Check if the type is an instance of `tuple[T, ...]`."""
+    p_t = get_proper_type(typ)
+    return isinstance(p_t, Instance) and p_t.type.fullname == "builtins.tuple"
+
+
+def is_tuple_like_type(typ: Type) -> TypeIs[TupleLikeType]:
+    """Check if the type is a tuple-like type."""
+    p_t = get_proper_type(typ)
+    return isinstance(p_t, TupleType | TypeVarTupleType) or is_tuple_instance_type(p_t)
+
+
+def is_finite_tuple_type(typ: Type) -> TypeIs[FiniteTupleType]:
+    """Check if the type is a finite tuple type."""
+    p_t = get_proper_type(typ)
+
+    if not isinstance(p_t, TupleType):
+        return False
+    return get_real_tuple_length(p_t) >= 0
+
+
+def get_real_tuple_length(typ: TupleLikeType) -> int:
+    r"""Get the length of a tuple type, or -1 if it is unbounded."""
+    p_t = get_proper_type(typ)
+    if isinstance(p_t, TypeVarTupleType):
+        # use the upper bound of the TypeVarTuple to determine the length
+        return get_real_tuple_length(p_t.upper_bound)
+    if is_tuple_instance_type(p_t):
+        # tuple[T, ...] is always unbounded, so return -1
+        return -1
+    if isinstance(p_t, TupleType):
+        size = 0
+        for item in p_t.items:
+            proper_item = get_proper_type(item)
+            if isinstance(proper_item, UnpackType):
+                unpacked = get_proper_type(proper_item.type)
+                assert is_tuple_like_type(unpacked)
+                result = get_real_tuple_length(unpacked)
+                if result == -1:
+                    return -1
+                size += result
+            else:
+                size += 1
+        return size
+    raise TypeError(f"Unexpected type for tuple length: {typ}")
+
+
+# def flatten_finite_tuple_type(types: Iterable[Type]) -> list[Type]:
+#     """Flatten a finite tuple type into a list of its items."""
+#     res = []
+#     for item in typ.items:
+#         proper_item = get_proper_type(item)
+#         if isinstance(proper_item, UnpackType):
+#             unpacked = get_proper_type(proper_item.type)
+#             if isinstance(unpacked, TypeVarTupleType):
+#                 # If the unpacked type is a TypeVarTuple, we can use its upper bound.
+#                 unpacked = get_proper_type(unpacked.upper_bound)
+#                 res.extend(flatten_finite_tuple_type(unpacked))
+#             elif is_finite_tuple_type(unpacked):
+#                 # If the unpacked type is a TupleType, we can flatten it.
+#                 res.extend(flatten_nested_tuples(unpacked.items))
+#             elif is_tuple_instance_type(unpacked):
+#                 # If the unpacked type is a tuple instance, we can flatten it.
+#                 res.extend(flatten_nested_tuples(unpacked))
+#             else:
+#                 raise TypeError(f"Unexpected type for tuple: {typ}")
+#         else:
+#             res.append(item)
+#     return res
+
+
+# def normalize_finite_tuple(typ: Iterable[Type]) -> list[Type]:
+#     r"""Get the length of a tuple type, or -1 if it is unbounded."""
+#     p_t = get_proper_type(typ)
+#     if isinstance(p_t, TypeVarTupleType):
+#         # use the upper bound of the TypeVarTuple to determine the length
+#         return get_real_tuple_length(p_t.upper_bound)
+#     if is_tuple_instance_type(p_t):
+#         # tuple[T, ...] is always unbounded, so return -1
+#         return -1
+#     if isinstance(p_t, TupleType):
+#         size = 0
+#         for item in p_t.items:
+#             proper_item = get_proper_type(item)
+#             if isinstance(proper_item, UnpackType):
+#                 unpacked = get_proper_type(proper_item.type)
+#                 assert is_tuple_like_type(unpacked)
+#                 result = get_real_tuple_length(unpacked)
+#                 if result == -1:
+#                     return -1
+#                 size += result
+#             else:
+#                 size += 1
+#         return size
+#     raise TypeError(f"Unexpected type for tuple length: {typ}")
+
+
+# def real_tuple_length(typ: TupleLikeType) -> int:
+#     if is_variable_tuple_type(typ):
+#         return -1
+#     if isinstance(typ, TypeVarTupleType):
+#         bound = get_proper_type(typ.upper_bound)
+#         assert isinstance(bound, TupleType | VariableTupleType) or is_variable_tuple_type(bound)
+#         return real_tuple_length(bound)
+#     if isinstance(typ, TupleType):
+#     size = 0
+#     for member in typ.items:
+#         p_t = get_proper_type(member)
+#         if isinstance(p_t, TypeVarTupleType):
+#             bound = get_proper_type(p_t.upper_bound)
+#             if isinstance(bound, TupleType):
+#                 # If the TypeVarTuple has a bound that is a tuple, we can use its length.
+#                 size += real_tuple_length(bound)
+#             else:
+#                 return -1
+#         elif isinstance(p_t, UnpackType):
+#             return -1
+#         else:
+#             size += 1
+#         return size
+#
+#     raise TypeError(f"Expected TupleType or VariableTupleType, got {typ!r}")
 
 
 def is_equal_sized_tuples(types: Sequence[ProperType]) -> TypeGuard[Sequence[TupleType]]:

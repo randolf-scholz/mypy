@@ -2290,6 +2290,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                 self.chk.named_type("typing.Mapping"),
                 self.chk.named_type("typing.Iterable"),
                 self.chk.named_type("builtins.function"),
+                self.chk.named_type("builtins.tuple"),
             )
         return self._arg_infer_context_cache
 

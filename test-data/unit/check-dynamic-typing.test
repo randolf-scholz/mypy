@@ -143,8 +143,11 @@ class C:
     def __contains__(self, a: A) -> bool:
         pass
 [file builtins.py]
+from typing import Generic, TypeVar
+T = TypeVar('T')
 class object:
   def __init__(self): pass
+class tuple(Generic[T]): pass
 class bool: pass
 class int: pass
 class type: pass
@@ -216,8 +219,11 @@ class A:
 
 class C: pass
 [file builtins.py]
+from typing import Generic, TypeVar
+T = TypeVar('T')
 class object:
   def __init__(self): pass
+class tuple(Generic[T]): pass
 class bool: pass
 class int: pass
 class type: pass

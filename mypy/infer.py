@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import NamedTuple
+from typing import NamedTuple, NewType, cast
+from typing_extensions import TypeIs
 
 from mypy.constraints import (
     SUBTYPE_OF,
@@ -13,7 +14,12 @@ from mypy.constraints import (
 )
 from mypy.nodes import ArgKind
 from mypy.solve import solve_constraints
-from mypy.types import CallableType, Instance, Type, TypeVarLikeType
+from mypy.types import CallableType, Instance, Type, TypeVarLikeType, get_proper_type
+
+IterableType = NewType("IterableType", Instance)
+"""Represents an instance of `Iterable[T]`."""
+TupleInstanceType = NewType("TupleInstance", Instance)
+"""Represents an instance of `tuple[T, ...]`."""
 
 
 class ArgumentInferContext(NamedTuple):
@@ -29,6 +35,32 @@ class ArgumentInferContext(NamedTuple):
     mapping_type: Instance
     iterable_type: Instance
     function_type: Instance
+    tuple_type: Instance
+
+    def is_iterable(self, typ: Type) -> bool:
+        """Check if the type is an iterable, i.e. implements the Iterable Protocol."""
+        from mypy.subtypes import is_subtype
+
+        return is_subtype(typ, self.iterable_type)
+
+    def is_iterable_instance_type(self, typ: Type) -> TypeIs[IterableType]:
+        """Check if the type is an Iterable[T]."""
+        p_t = get_proper_type(typ)
+        return isinstance(p_t, Instance) and p_t.type == self.iterable_type.type
+
+    def is_tuple_instance_type(self, typ: Type) -> TypeIs[TupleInstanceType]:
+        """Check if the type is a tuple instance, i.e. tuple[T, ...]."""
+        p_t = get_proper_type(typ)
+        return isinstance(p_t, Instance) and p_t.type == self.tuple_type.type
+
+    def make_iterable_instance_type(self, arg: Type) -> IterableType:
+        value = Instance(self.iterable_type.type, [arg])
+        return cast(IterableType, value)
+
+    def make_tuple_instance_type(self, arg: Type) -> TupleInstanceType:
+        """Create a TupleInstance type with the given argument type."""
+        value = Instance(self.tuple_type.type, [arg])
+        return cast(TupleInstanceType, value)
 
 
 def infer_function_type_arguments(

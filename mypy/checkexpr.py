@@ -2288,6 +2288,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                 self.chk.named_type("typing.Mapping"),
                 self.chk.named_type("typing.Iterable"),
                 self.chk.named_type("builtins.function"),
+                self.chk.named_type("builtins.tuple"),
             )
         return self._arg_infer_context_cache
 
@@ -2641,6 +2642,20 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                     callee_arg_kind,
                     allow_unpack=isinstance(callee_arg_type, UnpackType),
                 )
+
+                if callee_arg_kind == ARG_STAR and not isinstance(
+                    callee_arg_type, UnpackType | ParamSpecType
+                ):
+                    as_tuple = mapper.context.make_tuple_instance_type(callee_arg_type)
+                    callee_arg_type = UnpackType(as_tuple)
+
+                # print(f"Checking arg {i + 1}:"
+                #       f"\n\tactual_type: {actual_type}"
+                #       f"\n\tactual_kind: {actual_kind}"
+                #       f"\n\tcallee_arg_type: {callee_arg_type}"
+                #       f"\n\tcallee_arg_kind: {callee_arg_kind}"
+                #       f"\n\texpanded_actual: {expanded_actual}")
+
                 check_arg(
                     expanded_actual,
                     actual_type,

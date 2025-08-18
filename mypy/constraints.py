@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING, Final, cast
-from typing_extensions import TypeGuard
+from typing_extensions import TypeGuard, assert_never
 
 import mypy.subtypes
 import mypy.typeops
-from mypy.argmap import ArgTypeExpander
+from mypy.argmap import ArgTypeExpander, is_tuple_like_type
 from mypy.erasetype import erase_typevars
 from mypy.maptype import map_instance_to_supertype
 from mypy.nodes import (
@@ -121,6 +121,7 @@ def infer_constraints_for_callable(
     """
     constraints: list[Constraint] = []
     mapper = ArgTypeExpander(context)
+    arg_names = arg_names or [None] * len(arg_types)
 
     param_spec = callee.param_spec()
     param_spec_arg_types = []
@@ -137,123 +138,251 @@ def infer_constraints_for_callable(
                 break
 
     for i, actuals in enumerate(formal_to_actual):
-        if isinstance(callee.arg_types[i], UnpackType):
-            unpack_type = callee.arg_types[i]
-            assert isinstance(unpack_type, UnpackType)
+        formal_kind = callee.arg_kinds[i]
+        formal_name = callee.arg_names[i]
+        formal_type = get_proper_type(callee.arg_types[i])
 
-            # In this case we are binding all the actuals to *args,
-            # and we want a constraint that the typevar tuple being unpacked
-            # is equal to a type list of all the actuals.
-            actual_types = []
+        # 1. compute the expanded actuals
+        actual_arg_types: list[Type] = []
+        actual_arg_kinds: list[ArgKind] = []
+        actual_arg_names: list[str | None] = []
+        expanded_actuals: list[Type] = []
+        for actual in actuals:
+            actual_arg_type = arg_types[actual]
 
-            unpacked_type = get_proper_type(unpack_type.type)
-            if isinstance(unpacked_type, TypeVarTupleType):
-                tuple_instance = unpacked_type.tuple_fallback
-            elif isinstance(unpacked_type, TupleType):
-                tuple_instance = unpacked_type.partial_fallback
-            else:
-                assert False, "mypy bug: unhandled constraint inference case"
+            if actual_arg_type is None:
+                continue
 
-            for actual in actuals:
-                actual_arg_type = arg_types[actual]
-                if actual_arg_type is None:
-                    continue
+            actual_arg_kind = arg_kinds[actual]
+            actual_arg_name = arg_names[actual]
+            expanded_actual = mapper.expand_actual_type(
+                actual_arg_type, actual_arg_kind, formal_name, formal_kind
+            )
+            expanded_actuals.append(expanded_actual)
+            actual_arg_types.append(actual_arg_type)
+            actual_arg_kinds.append(actual_arg_kind)
+            actual_arg_names.append(actual_arg_name)
 
-                expanded_actual = mapper.expand_actual_type(
-                    actual_arg_type,
-                    arg_kinds[actual],
-                    callee.arg_names[i],
-                    callee.arg_kinds[i],
-                    allow_unpack=True,
+        # 2. depending on the formal kind, we can infer constraints.
+        if formal_kind not in (ARG_STAR, ARG_STAR2):
+            # there should be at most one actual for ARG_POS, ARG_OPT, or ARG_NAMED
+            # assert len(expanded_actuals) <= 1, f"{callee, formal_name, formal_kind, expanded_actuals}"
+            for expanded_actual in expanded_actuals:
+                c = infer_constraints(formal_type, expanded_actual, SUPERTYPE_OF)
+                constraints.extend(c)
+        elif param_spec and not incomplete_star_mapping:
+            assert isinstance(formal_type, ParamSpecType)
+            # If actual arguments are mapped to ParamSpec type, we can't infer individual
+            # constraints, instead store them and infer single constraint at the end.
+            # It is impossible to map actual kind to formal kind, so use some heuristic.
+            # This inference is used as a fallback, so relying on heuristic should be OK.
+            for actual_kind, actual_name, expanded_actual in zip(
+                actual_arg_kinds, actual_arg_names, expanded_actuals
+            ):
+                param_spec_arg_types.append(expanded_actual)
+                param_spec_arg_kinds.append(
+                    ARG_POS if actual_kind not in (ARG_STAR, ARG_STAR2) else actual_kind
                 )
+                param_spec_arg_names.append(actual_name)
+        elif formal_kind == ARG_STAR:
+            # we will construct two tuple-like types: one from the annotation, one form the actuals.
 
-                if arg_kinds[actual] == ARG_STAR:
-                    # Use the expanded form, one of TupleType | IterableType | ParamSpecType | AnyType
-                    star_args_type = mapper.parse_star_args_type(actual_arg_type)
-                    if isinstance(star_args_type, TupleType):
-                        actual_types.append(expanded_actual)
+            # 1. create the formal tuple type.
+            # treat annotations like ``*args: int`` as if they were ``*tuple[int, ...]``
+            formal_tuple_type = (
+                formal_type.type
+                if isinstance(formal_type, UnpackType)
+                else context.make_tuple_instance_type(formal_type)
+            )
+            assert is_tuple_like_type(formal_tuple_type)
+
+            # 2. construct the actual tuple type from all the arguments mapped to *args.
+            tuple_items = []
+            for actual_kind, expanded_actual in zip(actual_arg_kinds, expanded_actuals):
+                if actual_kind == ARG_POS:
+                    # If we have a positional argument, we can just append it.
+                    tuple_items.append(expanded_actual)
+                elif actual_kind == ARG_STAR:
+                    assert isinstance(expanded_actual, UnpackType)
+                    expanded_actual = get_proper_type(expanded_actual.type)
+                    if isinstance(expanded_actual, TupleType):
+                        tuple_items.extend(expanded_actual.items)
                     else:
-                        # If we are expanding an iterable inside * actual, append a homogeneous item instead
-                        actual_types.append(
-                            UnpackType(tuple_instance.copy_modified(args=[expanded_actual]))
-                        )
+                        tuple_items.append(UnpackType(expanded_actual))
                 else:
-                    actual_types.append(expanded_actual)
+                    assert False, "Unexpected argument kind for *args"
 
-            if isinstance(unpacked_type, TypeVarTupleType):
-                constraints.append(
-                    Constraint(
-                        unpacked_type,
-                        SUPERTYPE_OF,
-                        TupleType(actual_types, unpacked_type.tuple_fallback),
-                    )
-                )
-            elif isinstance(unpacked_type, TupleType):
-                # Prefixes get converted to positional args, so technically the only case we
-                # should have here is like Tuple[Unpack[Ts], Y1, Y2, Y3]. If this turns out
-                # not to hold we can always handle the prefixes too.
-                inner_unpack = unpacked_type.items[0]
-                assert isinstance(inner_unpack, UnpackType)
-                inner_unpacked_type = get_proper_type(inner_unpack.type)
-                suffix_len = len(unpacked_type.items) - 1
-                if isinstance(inner_unpacked_type, TypeVarTupleType):
-                    # Variadic item can be either *Ts...
-                    constraints.append(
-                        Constraint(
-                            inner_unpacked_type,
-                            SUPERTYPE_OF,
-                            TupleType(
-                                actual_types[:-suffix_len], inner_unpacked_type.tuple_fallback
-                            ),
-                        )
-                    )
-                else:
-                    # ...or it can be a homogeneous tuple.
-                    assert (
-                        isinstance(inner_unpacked_type, Instance)
-                        and inner_unpacked_type.type.fullname == "builtins.tuple"
-                    )
-                    for at in actual_types[:-suffix_len]:
-                        constraints.extend(
-                            infer_constraints(inner_unpacked_type.args[0], at, SUPERTYPE_OF)
-                        )
-                # Now handle the suffix (if any).
-                if suffix_len:
-                    for tt, at in zip(unpacked_type.items[1:], actual_types[-suffix_len:]):
-                        constraints.extend(infer_constraints(tt, at, SUPERTYPE_OF))
-            else:
-                assert False, "mypy bug: unhandled constraint inference case"
+            fallback = context.make_tuple_instance_type(AnyType)
+            actual_tuple_type = TupleType(tuple_items, fallback=fallback)
+            c = infer_constraints(formal_tuple_type, actual_tuple_type, SUPERTYPE_OF)
+            constraints.extend(c)
+        elif formal_kind == ARG_STAR2:
+            assert not isinstance(formal_type, UnpackType), "not handled here?!"
+
+            for expanded_actual in expanded_actuals:
+                c = infer_constraints(formal_type, expanded_actual, SUPERTYPE_OF)
+                constraints.extend(c)
         else:
-            for actual in actuals:
-                actual_arg_type = arg_types[actual]
-                if actual_arg_type is None:
-                    continue
+            assert_never(formal_kind)
+            # assert False, f"Unexpected argument kind for *args {formal_kind}"
 
-                if param_spec and callee.arg_kinds[i] in (ARG_STAR, ARG_STAR2):
-                    # If actual arguments are mapped to ParamSpec type, we can't infer individual
-                    # constraints, instead store them and infer single constraint at the end.
-                    # It is impossible to map actual kind to formal kind, so use some heuristic.
-                    # This inference is used as a fallback, so relying on heuristic should be OK.
-                    if not incomplete_star_mapping:
-                        param_spec_arg_types.append(
-                            mapper.expand_actual_type(
-                                actual_arg_type, arg_kinds[actual], None, arg_kinds[actual]
-                            )
-                        )
-                        actual_kind = arg_kinds[actual]
-                        param_spec_arg_kinds.append(
-                            ARG_POS if actual_kind not in (ARG_STAR, ARG_STAR2) else actual_kind
-                        )
-                        param_spec_arg_names.append(arg_names[actual] if arg_names else None)
-                else:
-                    actual_type = mapper.expand_actual_type(
-                        actual_arg_type,
-                        arg_kinds[actual],
-                        callee.arg_names[i],
-                        callee.arg_kinds[i],
-                    )
-                    c = infer_constraints(callee.arg_types[i], actual_type, SUPERTYPE_OF)
-                    constraints.extend(c)
+        #     # Construct the tuple that was passed in by the caller.
+        #     actual_types = []
+        #     for actual in actuals:
+        #         actual_kind = arg_kinds[actual]
+        #         actual_arg_type = arg_types[actual]
+        #
+        #         if actual_arg_type is None:
+        #             continue
+        #
+        #         expanded_actual = mapper.expand_actual_type(
+        #             actual_arg_type, actual_kind, formal_name, formal_kind, allow_unpack=True
+        #         )
+        #
+        #         if actual_kind == ARG_POS:
+        #             actual_types.append(expanded_actual)
+        #         elif actual_kind == ARG_STAR:
+        #             # mapper produced a tuple-type, append the unpack.
+        #             actual_types.append(UnpackType(expanded_actual))
+        #         else:
+        #             raise ValueError(f"Unexpected argument kind {actual_kind} for *args")
+        #
+        #     fallback = context.make_tuple_instance_type(AnyType)
+        #     parsed_argument = TupleType(actual_types, fallback=fallback)
+        #
+        #
+        #     c = infer_constraints(unpacked_type, SUPERTYPE_OF, parsed_argument)
+        #     constraints.extend(c)
+        #
+        #     if isinstance(unpacked_type, TypeVarTupleType):
+        #         tuple_instance = unpacked_type.tuple_fallback
+        #     elif isinstance(unpacked_type, TupleType):
+        #         tuple_instance = unpacked_type.partial_fallback
+        #     elif context.is_tuple_instance_type(unpacked_type):
+        #         tuple_instance = unpacked_type
+        #     else:
+        #         assert False, "mypy bug: unhandled constraint inference case"
+        #
+        # elif formal_kind == ARG_STAR2:
+        #     pass
+        # else:
+        #     assert False, "Unreachable"
+        #
+        #
+        # if isinstance(formal_type, UnpackType):
+        #     unpack_type = formal_type
+        #     assert isinstance(unpack_type, UnpackType)
+        #
+        #     # In this case we are binding all the actuals to *args,
+        #     # and we want a constraint that the typevar tuple being unpacked
+        #     # is equal to a type list of all the actuals.
+        #     actual_types = []
+        #
+        #     unpacked_type = get_proper_type(unpack_type.type)
+        #     if isinstance(unpacked_type, TypeVarTupleType):
+        #         tuple_instance = unpacked_type.tuple_fallback
+        #     elif isinstance(unpacked_type, TupleType):
+        #         tuple_instance = unpacked_type.partial_fallback
+        #     else:
+        #         assert False, "mypy bug: unhandled constraint inference case"
+        #
+        #     for actual in actuals:
+        #         actual_kind = arg_kinds[actual]
+        #         actual_arg_type = arg_types[actual]
+        #
+        #         if actual_arg_type is None:
+        #             continue
+        #
+        #         expanded_actual = mapper.expand_actual_type(
+        #             actual_arg_type, actual_kind, formal_name, formal_kind, allow_unpack=True
+        #         )
+        #
+        #         if actual_kind == ARG_STAR:
+        #             # Use the expanded form, one of TupleType | IterableType | ParamSpecType | AnyType
+        #             star_args_type = mapper.parse_star_args_type(actual_arg_type)
+        #
+        #             if isinstance(star_args_type, TupleType):
+        #                 actual_types.append(expanded_actual)
+        #             else:
+        #                 # If we are expanding an iterable inside * actual, append a homogeneous item instead
+        #                 actual_types.append(
+        #                     UnpackType(tuple_instance.copy_modified(args=[expanded_actual]))
+        #                 )
+        #         else:
+        #             actual_types.append(expanded_actual)
+        #
+        #     if isinstance(unpacked_type, TypeVarTupleType):
+        #         constraints.append(
+        #             Constraint(
+        #                 unpacked_type,
+        #                 SUPERTYPE_OF,
+        #                 TupleType(actual_types, unpacked_type.tuple_fallback),
+        #             )
+        #         )
+        #     elif isinstance(unpacked_type, TupleType):
+        #         # Prefixes get converted to positional args, so technically the only case we
+        #         # should have here is like Tuple[Unpack[Ts], Y1, Y2, Y3]. If this turns out
+        #         # not to hold we can always handle the prefixes too.
+        #         inner_unpack = unpacked_type.items[0]
+        #         assert isinstance(inner_unpack, UnpackType)
+        #         inner_unpacked_type = get_proper_type(inner_unpack.type)
+        #         suffix_len = len(unpacked_type.items) - 1
+        #         if isinstance(inner_unpacked_type, TypeVarTupleType):
+        #             # Variadic item can be either *Ts...
+        #             constraints.append(
+        #                 Constraint(
+        #                     inner_unpacked_type,
+        #                     SUPERTYPE_OF,
+        #                     TupleType(
+        #                         actual_types[:-suffix_len], inner_unpacked_type.tuple_fallback
+        #                     ),
+        #                 )
+        #             )
+        #         else:
+        #             # ...or it can be a homogeneous tuple.
+        #             assert (
+        #                 isinstance(inner_unpacked_type, Instance)
+        #                 and inner_unpacked_type.type.fullname == "builtins.tuple"
+        #             )
+        #             for at in actual_types[:-suffix_len]:
+        #                 constraints.extend(
+        #                     infer_constraints(inner_unpacked_type.args[0], at, SUPERTYPE_OF)
+        #                 )
+        #         # Now handle the suffix (if any).
+        #         if suffix_len:
+        #             for tt, at in zip(unpacked_type.items[1:], actual_types[-suffix_len:]):
+        #                 constraints.extend(infer_constraints(tt, at, SUPERTYPE_OF))
+        #     else:
+        #         assert False, "mypy bug: unhandled constraint inference case"
+        # else:
+        #     for actual in actuals:
+        #         actual_arg_type = arg_types[actual]
+        #         if actual_arg_type is None:
+        #             continue
+        #
+        #         if param_spec and formal_kind in (ARG_STAR, ARG_STAR2):
+        #             # If actual arguments are mapped to ParamSpec type, we can't infer individual
+        #             # constraints, instead store them and infer single constraint at the end.
+        #             # It is impossible to map actual kind to formal kind, so use some heuristic.
+        #             # This inference is used as a fallback, so relying on heuristic should be OK.
+        #             if not incomplete_star_mapping:
+        #                 param_spec_arg_types.append(
+        #                     mapper.expand_actual_type(
+        #                         actual_arg_type, arg_kinds[actual], None, arg_kinds[actual]
+        #                     )
+        #                 )
+        #                 actual_kind = arg_kinds[actual]
+        #                 param_spec_arg_kinds.append(
+        #                     ARG_POS if actual_kind not in (ARG_STAR, ARG_STAR2) else actual_kind
+        #                 )
+        #                 param_spec_arg_names.append(arg_names[actual] if arg_names else None)
+        #         else:
+        #             actual_type = mapper.expand_actual_type(
+        #                 actual_arg_type, arg_kinds[actual], formal_name, formal_kind
+        #             )
+        #             c = infer_constraints(formal_type, actual_type, SUPERTYPE_OF)
+        #             constraints.extend(c)
+
     if (
         param_spec
         and not any(c.type_var == param_spec.id for c in constraints)
@@ -1010,13 +1139,16 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
             and is_named_instance(template, TUPLE_LIKE_INSTANCE_NAMES)
             and self.direction == SUPERTYPE_OF
         ):
+            # checking (template=tuple[T, ...]) :> (actual=tuple[T1, ..., Tn])
             for item in actual.items:
                 if isinstance(item, UnpackType):
                     unpacked = get_proper_type(item.type)
                     if isinstance(unpacked, TypeVarTupleType):
-                        # Iterable[T] :> tuple[*Ts] => T :> Union[*Ts]
+                        # tuple[T, ...] :> tuple[*Ts] implies T :> Union[*Ts]
                         # Since Union[*Ts] is currently not available, use Any instead.
                         item = AnyType(TypeOfAny.from_omitted_generics)
+                    elif isinstance(unpacked, TupleType):
+                        pass
                     else:
                         assert (
                             isinstance(unpacked, Instance)

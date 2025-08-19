@@ -498,20 +498,6 @@ f(**m)
 g(**m)  # E: Argument 1 to "g" has incompatible type "**Mapping[str, object]"; expected "int"
 [builtins fixtures/dict.pyi]
 
-[case testStarArgsTupleExpressionVersusTypeVarTuple]
-# flags: --enable-incomplete-feature=PreciseTupleTypes
-# https://github.com/python/mypy/issues/19665
-from typing import Unpack, TypeVarTuple
-
-Ts = TypeVarTuple('Ts')
-
-def as_tuple(*args: Unpack[Ts]) -> tuple[Unpack[Ts]]: return args
-
-def test(one: int, many: tuple[int, ...]) -> None:
-    reveal_type( (one, *many, one) )           # N: Revealed type is "tuple[builtins.int, Unpack[builtins.tuple[builtins.int, ...]], builtins.int]"
-    reveal_type( as_tuple(one, *many, one) )   # N: Revealed type is "tuple[builtins.int, Unpack[builtins.tuple[builtins.int, ...]], builtins.int]"
-[builtins fixtures/tuple.pyi]
-
 [case testTupleConversionWithUnionStarArgs]
 from typing import Union, List, Set, Tuple, Unpack, TypeVarTuple
 
@@ -622,13 +608,16 @@ def test_union_different_size_tuple(
     reveal_type( (*yy,) )  # N: Revealed type is "builtins.tuple[Union[__main__.A, __main__.B, None], ...]"
 
 def test_union_fixed_size_and_variadic_tuple(
-    z1: Union[tuple[A, B, C], tuple[None, ...]],
-    z2: Union[tuple[A, B, C], tuple[None, Unpack[tuple[None, ...]], None]],
-    zz: tuple[Union[A, B, C, None], ...],  # reference type
+    x1: Union[tuple[A, B, C], tuple[None, ...]],
+    y1: tuple[Union[A, B, C, None], ...],  # reference type
+    x2: Union[tuple[A, B, C], tuple[None, Unpack[tuple[None, ...]], None]],
+    y2: tuple[Union[A, None], *tuple[Union[B, None], ...], Union[C, None]],  # reference type
 ) -> None:
-    reveal_type( (*z1,) )  # N: Revealed type is "builtins.tuple[Union[__main__.A, __main__.B, __main__.C, None], ...]"
-    reveal_type( (*z2,) )  # N: Revealed type is "builtins.tuple[Union[__main__.A, __main__.B, __main__.C, None], ...]"
-    reveal_type( (*zz,) )  # N: Revealed type is "builtins.tuple[Union[__main__.A, __main__.B, __main__.C, None], ...]"
+    reveal_type( (*x1,) )  # N: Revealed type is "builtins.tuple[Union[__main__.A, __main__.B, __main__.C, None], ...]"
+    reveal_type( (*y1,) )  # N: Revealed type is "builtins.tuple[Union[__main__.A, __main__.B, __main__.C, None], ...]"
+    reveal_type( (*x2,) )  # N: Revealed type is "tuple[Union[__main__.A, None], Unpack[builtins.tuple[Union[__main__.B, None], ...]], Union[__main__.C, None]]"
+    reveal_type( (*y2,) )  # N: Revealed type is "tuple[Union[__main__.A, None], Unpack[builtins.tuple[Union[__main__.B, None], ...]], Union[__main__.C, None]]"
+
 
 def test_union_variable_size_tuples(
     # same + subtype
@@ -692,9 +681,9 @@ def test_union_different_size_tuple(
     y3: Union[tuple[A, B], tuple[None, None, None, Unpack[tuple[()]]]],
     yy: tuple[Union[A, B, None], ...],  # reference type
 ) -> None:
-    reveal_type( [*y1] )  # N: Revealed type is "builtins.list[Union[__main__.A, __main__.B, None]]"
-    reveal_type( [*y2] )  # N: Revealed type is "builtins.list[Union[__main__.A, __main__.B, None]]"
-    reveal_type( [*y3] )  # N: Revealed type is "builtins.list[Union[__main__.A, __main__.B, None]]"
+    reveal_type( [*y1] )  # N: Revealed type is "builtins.list[Union[__main__.B, __main__.A, None]]"
+    reveal_type( [*y2] )  # N: Revealed type is "builtins.list[Union[__main__.A, None, __main__.B]]"
+    reveal_type( [*y3] )  # N: Revealed type is "builtins.list[Union[__main__.A, None, __main__.B]]"
     reveal_type( [*yy] )  # N: Revealed type is "builtins.list[Union[__main__.A, __main__.B, None]]"
 
 def test_union_fixed_size_and_variadic_tuple(
@@ -703,7 +692,7 @@ def test_union_fixed_size_and_variadic_tuple(
     zz: tuple[Union[A, B, C, None], ...],  # reference type
 ) -> None:
     reveal_type( [*z1] )  # N: Revealed type is "builtins.list[Union[__main__.A, __main__.B, __main__.C, None]]"
-    reveal_type( [*z2] )  # N: Revealed type is "builtins.list[Union[__main__.A, __main__.B, __main__.C, None]]"
+    reveal_type( [*z2] )  # N: Revealed type is "builtins.list[Union[__main__.A, None, __main__.B, __main__.C]]"
     reveal_type( [*zz] )  # N: Revealed type is "builtins.list[Union[__main__.A, __main__.B, __main__.C, None]]"
 
 def test_union_variable_size_tuples(
@@ -768,9 +757,9 @@ def test_union_different_size_tuple(
     y3: Union[tuple[A, B], tuple[None, None, None, Unpack[tuple[()]]]],
     yy: tuple[Union[A, B, None], ...],  # reference type
 ) -> None:
-    reveal_type( {*y1} )  # N: Revealed type is "builtins.set[Union[__main__.A, __main__.B, None]]"
-    reveal_type( {*y2} )  # N: Revealed type is "builtins.set[Union[__main__.A, __main__.B, None]]"
-    reveal_type( {*y3} )  # N: Revealed type is "builtins.set[Union[__main__.A, __main__.B, None]]"
+    reveal_type( {*y1} )  # N: Revealed type is "builtins.set[Union[__main__.B, __main__.A, None]]"
+    reveal_type( {*y2} )  # N: Revealed type is "builtins.set[Union[__main__.A, None, __main__.B]]"
+    reveal_type( {*y3} )  # N: Revealed type is "builtins.set[Union[__main__.A, None, __main__.B]]"
     reveal_type( {*yy} )  # N: Revealed type is "builtins.set[Union[__main__.A, __main__.B, None]]"
 
 def test_union_fixed_size_and_variadic_tuple(
@@ -779,7 +768,7 @@ def test_union_fixed_size_and_variadic_tuple(
     zz: tuple[Union[A, B, C, None], ...],  # reference type
 ) -> None:
     reveal_type( {*z1} )  # N: Revealed type is "builtins.set[Union[__main__.A, __main__.B, __main__.C, None]]"
-    reveal_type( {*z2} )  # N: Revealed type is "builtins.set[Union[__main__.A, __main__.B, __main__.C, None]]"
+    reveal_type( {*z2} )  # N: Revealed type is "builtins.set[Union[__main__.A, None, __main__.B, __main__.C]]"
     reveal_type( {*zz} )  # N: Revealed type is "builtins.set[Union[__main__.A, __main__.B, __main__.C, None]]"
 
 def test_union_variable_size_tuples(
@@ -828,15 +817,44 @@ Ts = TypeVarTuple('Ts')
 def test_padded_tuple(padded_tuple: tuple[A, Unpack[Ts], A]) -> None:
     # technically, this should be ``typ[A | None | Union[*Ts]]``
     reveal_type( (*padded_tuple,) )  # N: Revealed type is "tuple[__main__.A, Unpack[Ts`-1], __main__.A]"
-    reveal_type( [*padded_tuple] )   # N: Revealed type is "builtins.list[builtins.object]"
-    reveal_type( {*padded_tuple} )   # N: Revealed type is "builtins.set[builtins.object]"
+    reveal_type( [*padded_tuple] )   # N: Revealed type is "builtins.list[Any]"
+    reveal_type( {*padded_tuple} )   # N: Revealed type is "builtins.set[Any]"
 
-def test_padded_union(padded_union: Union[tuple[A, Unpack[Ts], A], tuple[None, None, None]]) -> None:
+def test_padded_union_typevartuple(padded_union: Union[tuple[A, Unpack[Ts], A], tuple[None, None, None]]) -> None:
     # FIXME: https://github.com/python/mypy/issues/16720
-    reveal_type( (*padded_union,) )  # N: Revealed type is "tuple[Union[A | None], Unpack[builtins.tuple[object], ...], Union[A | None]]"
-    reveal_type( [*padded_union] )   # N: Revealed type is "builtins.list[builtins.object]"
-    reveal_type( {*padded_union} )   # N: Revealed type is "builtins.set[builtins.object]"
+    reveal_type( (*padded_union,) )  # N: Revealed type is "tuple[Union[__main__.A | None], Unpack[builtins.tuple[Any], ...], Union[__main__.A | None]]"
+    reveal_type( [*padded_union] )   # N: Revealed type is "builtins.list[Any]"
+    reveal_type( {*padded_union} )   # N: Revealed type is "builtins.set[Any]"
+
+def test_padded_union_head(
+    x: Union[tuple[None, A, A, *tuple[None, ...]], tuple[None, A, *tuple[None, ...]]],
+    y: tuple[None, A, *tuple[Union[A, None], ...]],  # reference type
+) -> None:
+    reveal_type( (*x,) )  # N: Revealed type is "tuple[None, __main__.A, Unpack[builtins.tuple[Union[__main__.A, None], ...]]]"
+    reveal_type( (*y,) )  # N: Revealed type is "tuple[None, __main__.A, Unpack[builtins.tuple[Union[__main__.A, None], ...]]]"
+
+def test_padded_union_tail(
+    x: Union[tuple[*tuple[None, ...], A, A, None], tuple[*tuple[None, ...], A, None]],
+    y: tuple[*tuple[Union[A, None], ...], A, None],  # reference type
+) -> None:
+    reveal_type( (*x,) )  # N: Revealed type is "tuple[Unpack[builtins.tuple[Union[None, __main__.A], ...]], __main__.A, None]"
+    reveal_type( (*y,) )  # N: Revealed type is "tuple[Unpack[builtins.tuple[Union[__main__.A, None], ...]], __main__.A, None]"
 [builtins fixtures/primitives.pyi]
+
+
+[case testStarArgsTupleExpressionVersusTypeVarTuple]
+# flags: --enable-incomplete-feature=PreciseTupleTypes
+# https://github.com/python/mypy/issues/19665
+from typing import Unpack, TypeVarTuple
+
+Ts = TypeVarTuple('Ts')
+
+def as_tuple(*args: Unpack[Ts]) -> tuple[Unpack[Ts]]: return args
+
+def test(one: int, many: tuple[int, ...]) -> None:
+    reveal_type( (one, *many, one) )           # N: Revealed type is "tuple[builtins.int, Unpack[builtins.tuple[builtins.int, ...]], builtins.int]"
+    reveal_type( as_tuple(one, *many, one) )   # N: Revealed type is "tuple[builtins.int, Unpack[builtins.tuple[builtins.int, ...]], builtins.int]"
+[builtins fixtures/tuple.pyi]
 
 
 [case testStarArgsWithPaddedTupleArgumentUpcast]

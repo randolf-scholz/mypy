@@ -47,9 +47,10 @@ class memoryview(Sequence[int]):
     def __iter__(self) -> Iterator[int]: pass
     def __contains__(self, other: object) -> bool: pass
     def __getitem__(self, item: int) -> int: pass
-class tuple(Iterable[T]):
+_Tuple_co = TypeVar('_Tuple_co', covariant=True)
+class tuple(Iterable[_Tuple_co]):
+    def __iter__(self) -> Iterator[_Tuple_co]: pass
     def __contains__(self, other: object) -> bool: pass
-    def __iter__(self) -> Iterator[T]: pass
 class list(Sequence[T]):
     def append(self, v: T) -> None: pass
     def __iter__(self) -> Iterator[T]: pass

@@ -1,7 +1,5 @@
 # builtins stub with object.__init_subclass__
 
-from typing import Mapping, Iterable  # needed for ArgumentInferContext
-
 class object:
     def __init_subclass__(cls) -> None: pass
 
@@ -13,6 +11,9 @@ class str: pass
 class function: pass
 class dict: pass
 
-from typing import Iterable, Generic, TypeVar
-_T_co = TypeVar('_T_co', covariant=True)
-class tuple(Generic[_T_co], Iterable[_T_co]): pass
+# region ArgumentInferContext
+from typing import Mapping, Generic, Iterator, TypeVar
+_Tuple_co = TypeVar('_Tuple_co', covariant=True)
+class tuple(Generic[_Tuple_co]):
+    def __iter__(self) -> Iterator[_Tuple_co]: pass
+# endregion ArgumentInferContext

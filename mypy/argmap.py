@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from itertools import chain
 from typing import TYPE_CHECKING, Callable, cast
 from typing_extensions import NewType, TypeAlias as _TypeAlias, TypeGuard, TypeIs
 
@@ -219,7 +220,7 @@ class ArgTypeExpander:
         actual_type = get_proper_type(actual_type)
         if actual_kind == nodes.ARG_STAR:
             # parse *args as one of the following:
-            #    IterableType | TupleType | ParamSpecType | AnyType
+            #    TupleType | TupleInstanceType | ParamSpecType | AnyType
             star_args_type = self.parse_star_args_type(actual_type)
 
             if self.context.is_tuple_instance_type(star_args_type):
@@ -372,16 +373,18 @@ class ArgTypeExpander:
             return self._solve_as_iterable(p_t)
         return AnyType(TypeOfAny.from_error)
 
-    def parse_star_args_type(
-        self, typ: Type
-    ) -> TupleType | TupleInstanceType | ParamSpecType | AnyType:
-        """Parse the type of a ``*args`` argument.
+    def parse_star_args_type(self, typ: Type) -> TupleType | TupleInstanceType | ParamSpecType:
+        """Parse the type of a ``*args`` argument into a tuple-like type.
 
-        Returns one of TupleType, TupleInstanceType, ParamSpecType or AnyType.
-        Returns AnyType(TypeOfAny.from_error) if the type cannot be parsed or is invalid.
+        Examples:
+            list[int] -> tuple[int, ...]
+            list[int] | list[str] -> tuple[int | str, ...]
+
+        Returns one of TupleType, TupleInstanceType, ParamSpecType.
+        Returns `tuple[AnyType(TypeOfAny.from_errors), ...]` if the type cannot be parsed or is invalid.
         """
         p_t = get_proper_type(typ)
-        if isinstance(p_t, (TupleType, ParamSpecType, AnyType)):
+        if isinstance(p_t, (TupleType, ParamSpecType)):
             # just return the type as-is
             return p_t
         elif isinstance(p_t, TypeVarTupleType):
@@ -405,12 +408,15 @@ class ArgTypeExpander:
                     return self.context.make_tuple_instance_type(arg)
                 else:
                     # some items in the union are not iterable, return AnyType
-                    return AnyType(TypeOfAny.from_error)
+                    error_type = AnyType(TypeOfAny.from_error)
+                    return self.context.make_tuple_instance_type(error_type)
         else:
             parsed = self.as_iterable_type(p_t)
             if self.context.is_iterable_instance_type(parsed):
                 return self.context.make_tuple_instance_type(parsed.args[0])
-            return AnyType(TypeOfAny.from_error)
+            # the argument is not iterable
+            error_type = AnyType(TypeOfAny.from_error)
+            return self.context.make_tuple_instance_type(error_type)
 
     def process_tuple_type(self, typ: TupleType) -> tuple[TupleType, TupleType, TupleType]:
         r"""Split a tuple into 3 parts: head part, body part and tail part.
@@ -477,50 +483,80 @@ class ArgTypeExpander:
             tuple[None, *tuple[None, ...], None]
                 -> tuple[int | None, *tuple[int | str | None, ...], int | None]
         """
-        heads: list[TupleType]
-        bodies: list[TupleType]
-        tails: list[TupleType]
-        heads, bodies, tails = zip(*(self.process_tuple_type(typ) for typ in types))
+        head_tuples: list[TupleType]
+        body_tuples: list[TupleType]
+        tail_tuples: list[TupleType]
+        head_tuples, body_tuples, tail_tuples = zip(
+            *(self.process_tuple_type(typ) for typ in types)
+        )
 
-        head_items: list[Type] = []
-        body_items: list[Type] = []
-        tail_items: list[Type] = []
+        # extract the items from the tuples
+        heads: list[list[Type]] = [head.items for head in head_tuples]
+        tails: list[list[Type]] = [tail.items for tail in tail_tuples]
+        remaining_head_items: list[list[Type]]
+        remaining_tail_items: list[list[Type]]
+
+        target_head_items: list[Type] = []
+        target_body_items: list[Type] = []
+        target_tail_items: list[Type] = []
 
         # 1. process all heads in parallel, stopping when one of the heads is exhausted
-        head_length = min(len(head.items) for head in heads)
-        for items in zip(*(head.items[:head_length] for head in heads)):
+        shared_head_length = min(len(head) for head in heads)
+        for items in zip(*(head[:shared_head_length] for head in heads)):
             # append the union of the items to the head part
-            head_items.append(make_simplified_union(items))
+            target_head_items.append(make_simplified_union(items))
         # collect all the remaining head items from generators that were not exhausted
-        remaining_head_items = [item for head in heads for item in head.items[head_length:]]
+        remaining_head_items = [head[shared_head_length:] for head in heads]
 
-        # 2. process all tails in parallel, stopping when one of the tails is exhausted
-        tail_length = min(len(tail.items) for tail in tails)
-        for items in zip(*(tail.items[:tail_length] for tail in tails)):
+        # If a tuple has no body items, prepend the remaining head items to the tail.
+        # This addresses cases like combining `tuple[A, B, C]` with `tuple[X, *tuple[Y, ...], Z]`.
+        # which should yield tuple[A | X, *tuple[B | Y, ...], C | Z]
+        for remaining_head, body_tuple, tail in zip(remaining_head_items, body_tuples, tails):
+            if not body_tuple.items:
+                # move all remaining head items to the start of the tail
+                _tail = tail[:]
+                tail.clear()
+                tail.extend(remaining_head)
+                tail.extend(_tail)
+                remaining_head.clear()
+
+        # 2. process all tails in parallel, in reverse, stopping when one of the tails is exhausted
+        shared_tail_length = min(len(tail) for tail in tails)
+        for items in zip(*(tail[-1 : -shared_tail_length - 1 : -1] for tail in tails)):
             # append the union of the items to the tail part
-            tail_items.append(make_simplified_union(items))
+            target_tail_items.append(make_simplified_union(items))
         # collect all the remaining tail items from generators that were not exhausted
-        remaining_tail_items = [item for tail in tails for item in tail.items[tail_length:]]
+        target_tail_items.reverse()  # reverse to maintain original order
+        remaining_tail_items = [tail[: len(tail) - shared_tail_length] for tail in tails]
+        # note: do not use tail[:-shared_tail_length]; breaks when shared_tail_length=0
 
         # 3. process all bodies, coercing them into iterable types
-        for body in bodies:
-            if not body.items:
+        for body_tuple in body_tuples:
+            if not body_tuple.items:
                 continue
-            parsed_body_type = self.as_iterable_type(body)
+            parsed_body_type = self.as_iterable_type(body_tuple)
             if isinstance(parsed_body_type, AnyType):
-                body_items.append(parsed_body_type)
+                target_body_items.append(parsed_body_type)
             else:  # Iterable[T]
-                body_items.append(parsed_body_type.args[0])
-        combined_items = remaining_head_items + body_items + remaining_tail_items
+                target_body_items.append(parsed_body_type.args[0])
+
+        # 4. collected all items that will be put into the variable part
+        combined_items = [
+            *chain.from_iterable(remaining_head_items),
+            *target_body_items,
+            *chain.from_iterable(remaining_tail_items),
+        ]
 
         if combined_items:
             variable_type = make_simplified_union(combined_items)
             variable_part = self.context.make_tuple_instance_type(variable_type)
             return TupleType(
-                [*head_items, UnpackType(variable_part), *tail_items],
+                [*target_head_items, UnpackType(variable_part), *target_tail_items],
                 fallback=self.context.tuple_type,
             )
-        return TupleType([*head_items, *body_items], fallback=self.context.tuple_type)
+        # there are neither tail nor body items, so we return just the head part
+        assert not target_tail_items
+        return TupleType(target_head_items, fallback=self.context.tuple_type)
 
     def combine_finite_tuple_types(self, types: Sequence[FiniteTupleType]) -> TupleType:
         """Combine multiple finite tuple types into a single tuple type.

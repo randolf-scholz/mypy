@@ -215,7 +215,9 @@ def bar(*a: bytes, **k: int):
     p1("a", d="a", **k)
     p1("a", **k)  # E: Argument 2 to "foo" has incompatible type "**dict[str, int]"; expected "str"
     p1(**k)  # E: Argument 1 to "foo" has incompatible type "**dict[str, int]"; expected "str"
-    p1(*a)  # E: Expected iterable as variadic argument
+    reveal_type(a)  # N: Revealed type is "builtins.tuple[builtins.bytes, ...]"
+    p1(*a)  # E: Argument 1 to "foo" has incompatible type "*tuple[bytes, ...]"; expected "str" \
+            # E: Argument 1 to "foo" has incompatible type "*tuple[bytes, ...]"; expected "int"
 
 
 def baz(a: int, b: int) -> int: ...

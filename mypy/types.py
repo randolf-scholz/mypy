@@ -4094,7 +4094,7 @@ def find_unpack_in_list(items: Sequence[Type]) -> int | None:
             # semanal phase.
             # Funky code here avoids mypyc narrowing the type of unpack_index.
             old_index = unpack_index
-            assert old_index is None
+            assert old_index is None, f"Multiple UnpackType found in {items}"
             # Don't return so that we can also sanity check there is only one.
             unpack_index = i
     return unpack_index

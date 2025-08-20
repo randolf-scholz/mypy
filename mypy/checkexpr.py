@@ -2549,6 +2549,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
 
         for i, actuals in enumerate(formal_to_actual):
             orig_callee_arg_type = get_proper_type(callee.arg_types[i])
+            orig_callee_arg_kind = callee.arg_kinds[i]
 
             # Checking the case that we have more than one item but the first argument
             # is an unpack, so this would be something like:
@@ -2580,8 +2581,21 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
 
             if not expanded_tuple:
                 actual_types = [arg_types[a] for a in actuals]
-                if isinstance(orig_callee_arg_type, UnpackType):
-                    unpacked_type = get_proper_type(orig_callee_arg_type.type)
+
+                if orig_callee_arg_kind == ARG_STAR:
+                    if isinstance(orig_callee_arg_type, UnpackType):
+                        XXX = orig_callee_arg_type
+                    elif isinstance(orig_callee_arg_type, ParamSpecType):
+                        XXX = orig_callee_arg_type
+                    else:
+                        # treat ``*args: T`` annotation as if ``*args: *tuple[T, ...]``
+                        as_tuple = mapper.context.make_tuple_instance_type(orig_callee_arg_type)
+                        XXX = UnpackType(as_tuple)
+                else:
+                    XXX = orig_callee_arg_type
+
+                if isinstance(XXX, UnpackType):
+                    unpacked_type = get_proper_type(XXX.type)
                     if isinstance(unpacked_type, TupleType):
                         inner_unpack_index = find_unpack_in_list(unpacked_type.items)
                         if inner_unpack_index is None:
@@ -2619,8 +2633,9 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                         callee_arg_types = [unpacked_type.args[0]] * len(actuals)
                         callee_arg_kinds = [ARG_POS] * len(actuals)
                 else:
+                    # assert not isinstance(orig_callee_arg_type, UnpackType)
                     callee_arg_types = [orig_callee_arg_type] * len(actuals)
-                    callee_arg_kinds = [callee.arg_kinds[i]] * len(actuals)
+                    callee_arg_kinds = [orig_callee_arg_kind] * len(actuals)
 
             assert len(actual_types) == len(actuals) == len(actual_kinds)
 
@@ -2633,17 +2648,41 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
 
             assert len(callee_arg_types) == len(actual_types)
             assert len(callee_arg_types) == len(callee_arg_kinds)
-            for actual, actual_type, actual_kind, callee_arg_type, callee_arg_kind in zip(
+            for actual, actual_type, actual_kind, callee_arg_type, callee_arg_kind in zip(  #
                 actuals, actual_types, actual_kinds, callee_arg_types, callee_arg_kinds
             ):
+                # p_callee_arg_type = get_proper_type(callee_arg_type)
+                # if callee_arg_kind == ARG_STAR and actual_kind == ARG_STAR and not isinstance(p_callee_arg_type, ParamSpecType | UnpackType):
+                #     # We have an annotation like ``*args: T``, treat it as if we had *args: *tuple[T, ...]
+                #     callee_arg_type = UnpackType(mapper.context.make_tuple_instance_type(callee_arg_type))
+
+                # allow_unpack = (callee_arg_kind == ARG_STAR) and (actual_kind == ARG_STAR)
+                allow_unpack = isinstance(callee_arg_type, UnpackType)
+
                 # Check that a *arg is valid as varargs.
                 expanded_actual = mapper.expand_actual_type(
                     actual_type,
                     actual_kind,
                     callee.arg_names[i],
                     callee_arg_kind,
-                    allow_unpack=isinstance(callee_arg_type, UnpackType),
+                    allow_unpack=allow_unpack,
                 )
+
+                # print(
+                #     f"Checking arg {i + 1}:"
+                #     f"\n\texpanded_actual: {expanded_actual}"
+                #     f"\n\tactual_type: {actual_type}"
+                #     f"\n\tactual_kind: {actual_kind}"
+                #     f"\n\tcallee_arg_type: {callee_arg_type}"
+                #     f"\n\tcallee_arg_kind: {callee_arg_kind}"
+                #     f"\n\t{orig_callee_arg_type=}"
+                #     f"\n\t{orig_callee_arg_kind=}",
+                #     f"\n\t{is_subtype(expanded_actual, callee_arg_type)=}",
+                #     f"\n\t{expanded_tuple=}",
+                #     f"\n\t{allow_unpack=}",
+                #     flush=True,
+                # )
+
                 check_arg(
                     expanded_actual,
                     actual_type,
@@ -2675,29 +2714,40 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
         original_caller_type = get_proper_type(original_caller_type)
         callee_type = get_proper_type(callee_type)
 
-        if isinstance(callee_type, UnpackType) and not isinstance(caller_type, UnpackType):
-            # it can happen that the caller_type got expanded.
-            # since this is from a callable definition, it should be one of the following:
-            # - TupleType, TypeVarTupleType, or a variable length tuple Instance.
-            unpack_arg = get_proper_type(callee_type.type)
-            if isinstance(unpack_arg, TypeVarTupleType):
-                # substitute with upper bound of the TypeVarTuple
-                unpack_arg = get_proper_type(unpack_arg.upper_bound)
-            # note: not using elif, since in the future upper bound may be a finite tuple
-            if isinstance(unpack_arg, Instance) and unpack_arg.type.fullname == "builtins.tuple":
-                callee_type = get_proper_type(unpack_arg.args[0])
-            elif isinstance(unpack_arg, TupleType):
-                # this branch should currently never hit, but it may hit in the future,
-                # if it will ever be allowed to upper bound TypeVarTuple with a tuple type.
-                elements = flatten_nested_tuples(unpack_arg.items)
-                if m < len(elements):
-                    # pick the corresponding item from the tuple
-                    callee_type = get_proper_type(elements[m])
-                else:
-                    self.chk.fail(message_registry.TUPLE_INDEX_OUT_OF_RANGE, context)
-                    return
-            else:
-                raise TypeError(f"did not expect unpack_arg to be of type {type(unpack_arg)=}")
+        # print(caller_type, callee_type)
+
+        # if isinstance(callee_type, UnpackType) and isinstance(caller_type, UnpackType):
+        #     # print(f"UnpackType: {caller_type=} {callee_type=} {is_subtype(callee_type, caller_type)}")
+        #     callee_type = get_proper_type(callee_type.type)
+        #     caller_type = get_proper_type(caller_type.type)
+        #     # print(f"UnpackType: {caller_type=} {callee_type=} {is_subtype(callee_type, caller_type)}")
+
+        # if isinstance(callee_type, UnpackType) and not isinstance(caller_type, UnpackType):
+        #     # it can happen that the caller_type got expanded.
+        #     # since this is from a callable definition, it should be one of the following:
+        #     # - TupleType, TypeVarTupleType, or a variable length tuple Instance.
+        #     unpack_arg = get_proper_type(callee_type.type)
+        #     if isinstance(unpack_arg, TypeVarTupleType):
+        #         # substitute with upper bound of the TypeVarTuple
+        #         unpack_arg = get_proper_type(unpack_arg.upper_bound)
+        #     # note: not using elif, since in the future upper bound may be a finite tuple
+        #     if isinstance(unpack_arg, Instance) and unpack_arg.type.fullname == "builtins.tuple":
+        #         callee_type = get_proper_type(unpack_arg.args[0])
+        #     elif isinstance(unpack_arg, TupleType):
+        #         assert False
+        #         # this branch should currently never hit, but it may hit in the future,
+        #         # if it will ever be allowed to upper bound TypeVarTuple with a tuple type.
+        #         elements = flatten_nested_tuples(unpack_arg.items)
+        #         if m < len(elements):
+        #             # pick the corresponding item from the tuple
+        #             callee_type = get_proper_type(elements[m])
+        #         else:
+        #             self.chk.fail(message_registry.TUPLE_INDEX_OUT_OF_RANGE, context)
+        #             return
+        #     else:
+        #         raise TypeError(f"did not expect unpack_arg to be of type {unpack_arg=}")
+
+        # print(caller_type, callee_type)
 
         if isinstance(caller_type, DeletedType):
             self.msg.deleted_as_rvalue(caller_type, context)
@@ -5261,7 +5311,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                 else:
                     ctx = None
                 original_arg_type = self.accept(item.expr, ctx)
-                # convert arg type to one of TupleType, IterableType, AnyType or
+                # convert arg type to one of TupleType, TupleInstanceType, AnyType
                 arg_type_expander = ArgTypeExpander(self.argument_infer_context())
                 star_args_type = arg_type_expander.parse_star_args_type(original_arg_type)
                 if isinstance(star_args_type, TupleType):

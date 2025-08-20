@@ -3,19 +3,23 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from itertools import chain
 from typing import TYPE_CHECKING, Callable, cast
-from typing_extensions import NewType, TypeAlias as _TypeAlias, TypeGuard, TypeIs
+from typing_extensions import NewType, TypeAlias as _TypeAlias, TypeIs, assert_never
 
 from mypy import nodes
 from mypy.maptype import map_instance_to_supertype
-from mypy.typeops import make_simplified_union
+from mypy.nodes import ARG_NAMED, ARG_NAMED_OPT, ARG_OPT, ARG_POS, ARG_STAR, ARG_STAR2
+from mypy.typeops import (
+    all_tuples,
+    make_simplified_union,
+    split_tuple_type,
+    split_union_of_tuple_types,
+)
 from mypy.types import (
     AnyType,
     CallableType,
     Instance,
     ParamSpecType,
-    ProperType,
     TupleType,
     Type,
     TypedDictType,
@@ -26,6 +30,7 @@ from mypy.types import (
     UnionType,
     UnpackType,
     flatten_nested_tuples,
+    flatten_nested_unions,
     get_proper_type,
 )
 
@@ -69,38 +74,57 @@ def map_actuals_to_formals(
         elif actual_kind == nodes.ARG_STAR:
             # We need to know the actual type to map varargs.
             actualt = get_proper_type(actual_arg_type(ai))
+            actual_items: int  # number of items in *args, or -1 if variable length
 
-            # Special case for union of equal sized tuples.
-            if (
+            # special case for tuple:
+            if isinstance(actualt, TupleType):
+                # note: tuple tail is not relevant for formal_to_actual mapping, since
+                #   we will never get past the variable part.
+                head, body, tail = split_tuple_type(actualt)
+                actual_items = -1 if body else len(head)
+
+            # Special case union of tuples
+            elif (
                 isinstance(actualt, UnionType)
                 and actualt.items
-                and is_equal_sized_tuples(
-                    proper_types := [get_proper_type(t) for t in actualt.items]
+                and all_tuples(
+                    proper_types := [
+                        get_proper_type(t) for t in flatten_nested_unions(actualt.items)
+                    ]
                 )
             ):
-                # pick an arbitrary member
-                actualt = proper_types[0]
-            if isinstance(actualt, TupleType):
-                # A tuple actual maps to a fixed number of formals.
-                for _ in range(len(actualt.items)):
-                    if fi < nformals:
-                        if formal_kinds[fi] != nodes.ARG_STAR2:
-                            formal_to_actual[fi].append(ai)
-                        else:
-                            break
-                        if formal_kinds[fi] != nodes.ARG_STAR:
-                            fi += 1
+                # note: tuple tail is not relevant for formal_to_actual mapping, since
+                #   we will never get past the variable part.
+                head, body, tail = split_union_of_tuple_types(proper_types)
+                actual_items = -1 if body else len(head)
+
+            # assume iterable
             else:
-                # Assume that it is an iterable (if it isn't, there will be
-                # an error later).
-                while fi < nformals:
-                    if formal_kinds[fi].is_named(star=True):
-                        break
-                    else:
-                        formal_to_actual[fi].append(ai)
-                    if formal_kinds[fi] == nodes.ARG_STAR:
-                        break
-                    fi += 1
+                actual_items = -1
+
+            while fi < nformals and actual_items:
+                if formal_kinds[fi] in (ARG_POS, ARG_OPT, ARG_STAR):
+                    formal_to_actual[fi].append(ai)
+                    actual_items -= 1
+                if formal_kinds[fi] in (ARG_STAR, ARG_NAMED, ARG_NAMED_OPT, ARG_STAR2):
+                    break
+                fi += 1
+
+                # if formal_kinds[fi].is_named(star=True):
+                #     break
+                # else:
+                #     formal_to_actual[fi].append(ai)
+                #     actual_items -= 1
+                # if formal_kinds[fi] == nodes.ARG_STAR:
+                #     break
+                # fi += 1
+
+                # if formal_kinds[fi].is_positional(star=True):
+                #     formal_to_actual[fi].append(ai)
+                #     fi += 1
+                #     actual_items -= 1
+                # else:
+                #     break
         elif actual_kind.is_named():
             assert actual_names is not None, "Internal error: named kinds without names given"
             name = actual_names[ai]
@@ -223,6 +247,13 @@ class ArgTypeExpander:
             #    TupleType | TupleInstanceType | ParamSpecType | AnyType
             star_args_type = self.parse_star_args_type(actual_type)
 
+            if formal_kind == nodes.ARG_STAR:
+                if isinstance(star_args_type, (ParamSpecType, AnyType)):
+                    # ParamSpec is valid in *args but it can't be unpacked.
+                    return star_args_type
+                return UnpackType(star_args_type)
+
+            # we are trying to map *args to positional arguments.
             if self.context.is_tuple_instance_type(star_args_type):
                 return star_args_type.args[0]
             elif isinstance(star_args_type, TupleType):
@@ -396,7 +427,9 @@ class ArgTypeExpander:
             # 1. Union of tuple
             if all(isinstance(t, TupleType) for t in proper_items):
                 proper_items = cast("list[TupleType]", proper_items)
-                return self.combine_tuple_types(proper_items)
+                combined = self.combine_tuple_types(proper_items)
+                print(proper_items, combined)
+                return combined
             # 2. Union of iterable types, e.g. Iterable[A] | Iterable[B]
             #    In this case return tuple[A | B, ...]
             else:
@@ -418,145 +451,128 @@ class ArgTypeExpander:
             error_type = AnyType(TypeOfAny.from_error)
             return self.context.make_tuple_instance_type(error_type)
 
-    def process_tuple_type(self, typ: TupleType) -> tuple[TupleType, TupleType, TupleType]:
-        r"""Split a tuple into 3 parts: head part, body part and tail part.
-
-        1. A head part which is the longest finite prefix of the tuple
-        2. A body part which covers all items from the first variable item to the last variable item
-        3. A tail part which is the longest finite suffix of the remaining tuple
-
-        Examples:
-            - tuple[int, str] -> (tuple[int, str], tuple[()], tuple[()])
-            - tuple[int, *tuple[int, ...]] -> (tuple[int], tuple[*tuple[int, ...]], tuple[()])
-            - tuple[*tuple[int, ...], int] -> (tuple[())], tuple[*tuple[int, ...]], tuple[int])
-            - tuple[int, *tuple[int, ...], int] -> (tuple[int], tuple[*tuple[int, ...]], tuple[int])
-            - tuple[int, *tuple[int, ...], str, *tuple[str, ...], int]
-              -> (head=tuple[int], variable=tuple[*tuple[int, ...], str, *tuple[str, ...]], tail=tuple[int])
-        """
-        head_items: list[Type] = []
-        tail_items: list[Type] = []
-        body_items: list[Type] = []
-
-        flattened_items = flatten_nested_tuples(typ.items)
-        generator = iter(flattened_items)
-
-        # determine the head part
-        for item in generator:
-            p_t = get_proper_type(item)
-            if isinstance(p_t, UnpackType):
-                body_items.append(item)
-                break
-            head_items.append(item)
-        # determine the body part
-        for item in generator:
-            p_t = get_proper_type(item)
-            if isinstance(p_t, UnpackType):
-                body_items.extend(tail_items)
-                body_items.append(item)
-                tail_items.clear()
-            else:
-                tail_items.append(item)
-
-        # construct the return
-        fallback = self.context.make_tuple_instance_type(AnyType(TypeOfAny.from_error))
-        head = TupleType(head_items, fallback=fallback)
-        body = TupleType(body_items, fallback=fallback)
-        tail = TupleType(tail_items, fallback=fallback)
-
-        return head, body, tail
-
     def combine_tuple_types(self, types: Sequence[TupleType]) -> TupleType:
-        """Combine multiple tuple types into a single tuple type.
-
-        This creates an upper bound for the union of the input tuple types.
-        If all input tuples are of the same (real) size, so is the result.
-
-        Examples:
-            tuple[int, int], tuple[None, None]
-                -> tuple[int | None, int | None]
-
-            tuple[int, *tuple[int, ...], int],
-            tuple[None, *tuple[None, ...], None]
-                -> tuple[int | None, *tuple[int | None, ...], int | None]
-
-            tuple[int, *tuple[int, ...], str, *tuple[str, ...], int]
-            tuple[None, *tuple[None, ...], None]
-                -> tuple[int | None, *tuple[int | str | None, ...], int | None]
-        """
-        head_tuples: list[TupleType]
-        body_tuples: list[TupleType]
-        tail_tuples: list[TupleType]
-        head_tuples, body_tuples, tail_tuples = zip(
-            *(self.process_tuple_type(typ) for typ in types)
-        )
-
-        # extract the items from the tuples
-        heads: list[list[Type]] = [head.items for head in head_tuples]
-        tails: list[list[Type]] = [tail.items for tail in tail_tuples]
-        remaining_head_items: list[list[Type]]
-        remaining_tail_items: list[list[Type]]
-
-        target_head_items: list[Type] = []
-        target_body_items: list[Type] = []
-        target_tail_items: list[Type] = []
-
-        # 1. process all heads in parallel, stopping when one of the heads is exhausted
-        shared_head_length = min(len(head) for head in heads)
-        for items in zip(*(head[:shared_head_length] for head in heads)):
-            # append the union of the items to the head part
-            target_head_items.append(make_simplified_union(items))
-        # collect all the remaining head items from generators that were not exhausted
-        remaining_head_items = [head[shared_head_length:] for head in heads]
-
-        # If a tuple has no body items, prepend the remaining head items to the tail.
-        # This addresses cases like combining `tuple[A, B, C]` with `tuple[X, *tuple[Y, ...], Z]`.
-        # which should yield tuple[A | X, *tuple[B | Y, ...], C | Z]
-        for remaining_head, body_tuple, tail in zip(remaining_head_items, body_tuples, tails):
-            if not body_tuple.items:
-                # move all remaining head items to the start of the tail
-                _tail = tail[:]
-                tail.clear()
-                tail.extend(remaining_head)
-                tail.extend(_tail)
-                remaining_head.clear()
-
-        # 2. process all tails in parallel, in reverse, stopping when one of the tails is exhausted
-        shared_tail_length = min(len(tail) for tail in tails)
-        for items in zip(*(tail[-1 : -shared_tail_length - 1 : -1] for tail in tails)):
-            # append the union of the items to the tail part
-            target_tail_items.append(make_simplified_union(items))
-        # collect all the remaining tail items from generators that were not exhausted
-        target_tail_items.reverse()  # reverse to maintain original order
-        remaining_tail_items = [tail[: len(tail) - shared_tail_length] for tail in tails]
-        # note: do not use tail[:-shared_tail_length]; breaks when shared_tail_length=0
-
-        # 3. process all bodies, coercing them into iterable types
-        for body_tuple in body_tuples:
-            if not body_tuple.items:
-                continue
-            parsed_body_type = self.as_iterable_type(body_tuple)
-            if isinstance(parsed_body_type, AnyType):
-                target_body_items.append(parsed_body_type)
-            else:  # Iterable[T]
-                target_body_items.append(parsed_body_type.args[0])
-
-        # 4. collected all items that will be put into the variable part
-        combined_items = [
-            *chain.from_iterable(remaining_head_items),
-            *target_body_items,
-            *chain.from_iterable(remaining_tail_items),
-        ]
-
-        if combined_items:
-            variable_type = make_simplified_union(combined_items)
-            variable_part = self.context.make_tuple_instance_type(variable_type)
-            return TupleType(
-                [*target_head_items, UnpackType(variable_part), *target_tail_items],
-                fallback=self.context.tuple_type,
-            )
+        head, body, tail = split_union_of_tuple_types(types)
+        fallback = self.context.tuple_type
+        if body:
+            # upcast the body part to Iterable[T].
+            virtual_tuple = TupleType(body, fallback=fallback)
+            virtual_iterable = self.as_iterable_type(virtual_tuple)
+            if self.context.is_iterable_instance_type(virtual_iterable):
+                body_arg = virtual_iterable.args[0]
+            elif isinstance(virtual_iterable, AnyType):
+                body_arg = virtual_iterable
+            else:
+                assert_never(virtual_iterable)
+            variable_part = self.context.make_tuple_instance_type(body_arg)
+            return TupleType([*head, UnpackType(variable_part), *tail], fallback=fallback)
         # there are neither tail nor body items, so we return just the head part
-        assert not target_tail_items
-        return TupleType(target_head_items, fallback=self.context.tuple_type)
+        assert not tail
+        return TupleType(head, fallback=fallback)
+
+    # def _combine_tuple_types(self, types: Sequence[TupleType]) -> TupleType:
+    #     """Combine multiple tuple types into a single tuple type.
+    #
+    #     This creates an upper bound for the union of the input tuple types.
+    #     If all input tuples are of the same (real) size, so is the result.
+    #
+    #     Examples:
+    #         tuple[int, int], tuple[None, None]
+    #             -> tuple[int | None, int | None]
+    #
+    #         tuple[int, *tuple[int, ...], int],
+    #         tuple[None, *tuple[None, ...], None]
+    #             -> tuple[int | None, *tuple[int | None, ...], int | None]
+    #
+    #         tuple[int, *tuple[int, ...], str, *tuple[str, ...], int]
+    #         tuple[None, *tuple[None, ...], None]
+    #             -> tuple[int | None, *tuple[int | str | None, ...], int | None]
+    #
+    #     Note:
+    #         According to the type spec at the time of writing, only one unbounded tuple
+    #         is allowed in a tuple type, but this code should work even with multiple
+    #         unbounded tuples, e.g. `tuple[*tuple[None, ...], str, *tuple[None, ...]]`
+    #         See: https://typing.python.org/en/latest/spec/tuples.html#unpacked-tuple-form
+    #     """
+    #     heads: list[list[Type]]
+    #     bodies: list[list[Type]]
+    #     tails: list[list[Type]]
+    #     remaining_head_items: list[list[Type]]
+    #     remaining_tail_items: list[list[Type]]
+    #     target_head_items: list[Type] = []
+    #     target_body_items: list[Type] = []
+    #     target_tail_items: list[Type] = []
+    #
+    #     # split each tuple
+    #     heads, bodies, tails = zip(*(split_tuple_type(typ) for typ in types))
+    #
+    #     # 1. process all heads in parallel, stopping when one of the heads is exhausted
+    #     shared_head_length = min(len(head) for head in heads)
+    #     for items in zip(*(head[:shared_head_length] for head in heads)):
+    #         # append the union of the items to the head part
+    #         target_head_items.append(make_simplified_union(items))
+    #     # collect all the remaining head items from generators that were not exhausted
+    #     remaining_head_items = [head[shared_head_length:] for head in heads]
+    #
+    #     # If a tuple has no body items, prepend the remaining head items to the tail.
+    #     # This addresses cases like combining `tuple[A, B, C]` with `tuple[X, *tuple[Y, ...], Z]`.
+    #     # which should yield tuple[A | X, *tuple[B | Y, ...], C | Z]
+    #     for remaining_head, body, tail in zip(remaining_head_items, bodies, tails):
+    #         if not body:
+    #             # move all remaining head items to the start of the tail
+    #             _tail = tail[:]
+    #             tail.clear()
+    #             tail.extend(remaining_head)
+    #             tail.extend(_tail)
+    #             remaining_head.clear()
+    #
+    #     # 2. process all tails in parallel, in reverse, stopping when one of the tails is exhausted
+    #     shared_tail_length = min(len(tail) for tail in tails)
+    #     for items in zip(*(tail[-1 : -shared_tail_length - 1 : -1] for tail in tails)):
+    #         # append the union of the items to the tail part
+    #         target_tail_items.append(make_simplified_union(items))
+    #     # collect all the remaining tail items from generators that were not exhausted
+    #     target_tail_items.reverse()  # reverse to maintain original order
+    #     remaining_tail_items = [tail[: len(tail) - shared_tail_length] for tail in tails]
+    #     # note: do not use tail[:-shared_tail_length]; breaks when shared_tail_length=0
+    #
+    #     # 3. process all bodies
+    #     for body in bodies:
+    #         for item in body:
+    #             p_t = get_proper_type(item)
+    #             if isinstance(p_t, UnpackType):
+    #                 unpacked = get_proper_type(p_t.type)
+    #                 if isinstance(unpacked, TypeVarTupleType):
+    #                     item = unpacked.tuple_fallback
+    #                     target_body_items.append(item)
+    #                 else:
+    #                     assert (
+    #                         isinstance(unpacked, Instance)
+    #                         and unpacked.type.fullname == "builtins.tuple"
+    #                     )
+    #                     item = unpacked.args[0]
+    #                     target_body_items.append(item)
+    #             else:
+    #                 target_body_items.append(item)
+    #
+    #     # 4. collected all items that will be put into the variable part
+    #     combined_items = [
+    #         *chain.from_iterable(remaining_head_items),
+    #         *target_body_items,
+    #         *chain.from_iterable(remaining_tail_items),
+    #     ]
+    #     fallback = self.context.tuple_type
+    #
+    #     if combined_items:
+    #         variable_type = make_simplified_union(combined_items)
+    #         variable_part = self.context.make_tuple_instance_type(variable_type)
+    #         return TupleType(
+    #             [*target_head_items, UnpackType(variable_part), *target_tail_items],
+    #             fallback=fallback,
+    #         )
+    #     # there are neither tail nor body items, so we return just the head part
+    #     assert not target_tail_items
+    #     return TupleType(target_head_items, fallback=fallback)
 
     def combine_finite_tuple_types(self, types: Sequence[FiniteTupleType]) -> TupleType:
         """Combine multiple finite tuple types into a single tuple type.
@@ -753,38 +769,3 @@ def get_real_tuple_length(typ: TupleLikeType) -> int:
 #         return size
 #
 #     raise TypeError(f"Expected TupleType or VariableTupleType, got {typ!r}")
-
-
-def is_equal_sized_tuples(types: Sequence[ProperType]) -> TypeGuard[Sequence[TupleType]]:
-    """Check if all types are tuples of the same size.
-
-    We use `flatten_nested_tuples` to deal with nested tuples.
-    Note that the result may still contain
-    """
-    if not types:
-        return True
-
-    iterator = iter(types)
-    typ = next(iterator)
-    if not isinstance(typ, TupleType):
-        return False
-    flattened_elements = flatten_nested_tuples(typ.items)
-    if any(
-        isinstance(get_proper_type(member), (UnpackType, TypeVarTupleType))
-        for member in flattened_elements
-    ):
-        # this can happen e.g. with tuple[int, *tuple[int, ...], int]
-        return False
-    size = len(flattened_elements)
-
-    for typ in iterator:
-        if not isinstance(typ, TupleType):
-            return False
-        flattened_elements = flatten_nested_tuples(typ.items)
-        if len(flattened_elements) != size or any(
-            isinstance(get_proper_type(member), (UnpackType, TypeVarTupleType))
-            for member in flattened_elements
-        ):
-            # this can happen e.g. with tuple[int, *tuple[int, ...], int]
-            return False
-    return True

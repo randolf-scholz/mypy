@@ -817,6 +817,10 @@ class SubtypeVisitor(TypeVisitor[bool]):
                 return False
             # At this point we know both fallbacks are non-tuple.
             return self._is_subtype(left.partial_fallback, right.partial_fallback)
+        elif isinstance(right, TypeVarTupleType):
+            # tuple[...] <: Ts ? => compare left to tuple[*Ts].
+            # example: *tuple[*Ts] <: *Ts => tuple[*Ts] <: Ts => tuple[*Ts] <: tuple[*Ts] => OK
+            return self._is_subtype(left, TupleType([UnpackType(right)], right.tuple_fallback))
         else:
             return False
 

@@ -157,11 +157,7 @@ def infer_constraints_for_callable(
                 actual_arg_kind = arg_kinds[actual]
                 actual_arg_name = arg_names[actual]
                 expanded_actual = mapper.expand_actual_type(
-                    actual_arg_type,
-                    actual_arg_kind,
-                    formal_name,
-                    formal_kind,
-                    allow_unpack=isinstance(formal_type, UnpackType),
+                    actual_arg_type, actual_arg_kind, formal_name, formal_kind
                 )
                 expanded_actuals.append(expanded_actual)
                 actual_arg_types.append(actual_arg_type)
@@ -216,40 +212,40 @@ def infer_constraints_for_callable(
                     parsed_formal_type = context.make_tuple_instance_type(formal_type)
 
                 # 2. construct the actual tuple type from all the arguments mapped to *args.
-                target_items = []
+                actual_items = []
                 for actual_kind, expanded_actual in zip(actual_arg_kinds, expanded_actuals):
                     if actual_kind == ARG_POS:
                         # If we have a positional argument, we can just append it.
-                        target_items.append(expanded_actual)
+                        actual_items.append(expanded_actual)
                     elif actual_kind == ARG_STAR:
                         # when both actual_kind and formal_kind are ARG_STAR,
                         # the mapper should return one of TupleType | TupleInstanceType | ParamSpecType
                         arg = get_proper_type(expanded_actual)
                         if isinstance(arg, TupleType):
-                            target_items.extend(arg.items)
+                            actual_items.extend(arg.items)
                         elif isinstance(arg, ParamSpecType):
-                            target_items.append(arg)
+                            actual_items.append(arg)
                         elif context.is_tuple_instance_type(arg):
-                            target_items.append(UnpackType(arg))
+                            actual_items.append(UnpackType(arg))
                         else:
-                            target_items.append(expanded_actual)
+                            actual_items.append(expanded_actual)
                     else:
                         assert False, f"Unexpected argument kind for *args: {actual_kind}"
                 # 2b. flatten the tuple items, we don't want to produce something like tuple[Unpack[tuple[A | B]]]
-                target_items = flatten_nested_tuples(target_items)
-                if target_items:  # TODO: using match-case would be much nicer (Python 3.10+)
-                    first_type = get_proper_type(target_items[0])
+                actual_items = flatten_nested_tuples(actual_items)
+                if actual_items:  # TODO: using match-case would be much nicer (Python 3.10+)
+                    first_type = get_proper_type(actual_items[0])
                     actual_tuple_type: Type
-                    if len(target_items) == 1 and isinstance(first_type, UnpackType):
-                        # case: [*tuple[int, ...]], just use tuple[int, ...]
-                        actual_tuple_type = first_type.type
-                    elif len(target_items) == 1 and isinstance(first_type, ParamSpecType):
+                    # if len(actual_items) == 1 and isinstance(first_type, UnpackType):
+                    #     # case: [*tuple[int, ...]], just use tuple[int, ...]
+                    #     actual_tuple_type = first_type.type
+                    if len(actual_items) == 1 and isinstance(first_type, ParamSpecType):
                         # case [P.Args], just use P.Args
                         actual_tuple_type = first_type
                     else:
                         # In all other cases, we create a TupleType from the items.
                         fallback = context.make_tuple_instance_type(AnyType)
-                        actual_tuple_type = TupleType(target_items, fallback=fallback)
+                        actual_tuple_type = TupleType(actual_items, fallback=fallback)
 
                     c = infer_constraints(parsed_formal_type, actual_tuple_type, SUPERTYPE_OF)
                     constraints.extend(c)
@@ -290,7 +286,6 @@ def infer_constraints_for_callable(
                         arg_kinds[actual],
                         callee.arg_names[i],
                         callee.arg_kinds[i],
-                        allow_unpack=True,
                     )
 
                     if arg_kinds[actual] == ARG_STAR:

@@ -27,10 +27,10 @@ from mypy.types import (
     TypeVarId,
     TypeVarTupleType,
     TypeVarType,
+    UninhabitedType,
     UnionType,
     UnpackType,
     flatten_nested_tuples,
-    flatten_nested_unions,
     get_proper_type,
 )
 
@@ -38,9 +38,11 @@ if TYPE_CHECKING:
     from mypy.infer import ArgumentInferContext, IterableType, TupleInstanceType
 
 
-FiniteTupleType = NewType("FiniteTupleType", TupleType)
+FlatTuple = NewType("FlatTuple", TupleType)
+"""A tuple type that has been flattened; any UnpackType should only contain TypeVarTupleType or TupleInstance."""
+FiniteTuple = NewType("FiniteTuple", TupleType)
 """Represents an instance of `tuple[T1, T2, ..., Tn]` with a finite number of items."""
-TupleLikeType: _TypeAlias = "TupleType | TypeVarTupleType | TupleInstanceType | FiniteTupleType"
+TupleLikeType: _TypeAlias = "TupleType | TypeVarTupleType | TupleInstanceType | FiniteTuple"
 r"""Types that are considered tuples or tuple-like."""
 
 
@@ -76,30 +78,27 @@ def map_actuals_to_formals(
             actualt = get_proper_type(actual_arg_type(ai))
             actual_items: int  # number of items in *args, or -1 if variable length
 
-            # special case for tuple:
+            # special case tuple
             if isinstance(actualt, TupleType):
                 # note: tuple tail is not relevant for formal_to_actual mapping, since
                 #   we will never get past the variable part.
                 head, body, tail = split_tuple_type(actualt)
                 actual_items = -1 if body else len(head)
 
-            # Special case union of tuples
+            # special case union of tuples
             elif (
                 isinstance(actualt, UnionType)
                 and actualt.items
-                and all_tuples(
-                    proper_types := [
-                        get_proper_type(t) for t in flatten_nested_unions(actualt.items)
-                    ]
-                )
+                and all_tuples(proper_types := actualt.proper_items())
             ):
                 # note: tuple tail is not relevant for formal_to_actual mapping, since
                 #   we will never get past the variable part.
                 head, body, tail = split_union_of_tuple_types(proper_types)
                 actual_items = -1 if body else len(head)
 
-            # assume iterable
+            # fallback: assume iterable
             else:
+                # use a negative value so when we decrement it always stays truthy
                 actual_items = -1
 
             while fi < nformals and actual_items:
@@ -109,22 +108,6 @@ def map_actuals_to_formals(
                 if formal_kinds[fi] in (ARG_STAR, ARG_NAMED, ARG_NAMED_OPT, ARG_STAR2):
                     break
                 fi += 1
-
-                # if formal_kinds[fi].is_named(star=True):
-                #     break
-                # else:
-                #     formal_to_actual[fi].append(ai)
-                #     actual_items -= 1
-                # if formal_kinds[fi] == nodes.ARG_STAR:
-                #     break
-                # fi += 1
-
-                # if formal_kinds[fi].is_positional(star=True):
-                #     formal_to_actual[fi].append(ai)
-                #     fi += 1
-                #     actual_items -= 1
-                # else:
-                #     break
         elif actual_kind.is_named():
             assert actual_names is not None, "Internal error: named kinds without names given"
             name = actual_names[ai]
@@ -227,7 +210,6 @@ class ArgTypeExpander:
         actual_kind: nodes.ArgKind,
         formal_name: str | None,
         formal_kind: nodes.ArgKind,
-        allow_unpack: bool = False,
     ) -> Type:
         """Return the actual (caller) type(s) of a formal argument with the given kinds.
 
@@ -242,46 +224,59 @@ class ArgTypeExpander:
         """
         original_actual = actual_type
         actual_type = get_proper_type(actual_type)
-        if actual_kind == nodes.ARG_STAR:
+        if actual_kind == ARG_STAR:
             # parse *args as one of the following:
-            #    TupleType | TupleInstanceType | ParamSpecType | AnyType
+            #    TupleType | ParamSpecType | AnyType
+            # Then, depending on the formal type, return a tuple-like type or an item from the tuple.
             star_args_type = self.parse_star_args_type(actual_type)
 
-            if formal_kind == nodes.ARG_STAR:
-                if isinstance(star_args_type, (ParamSpecType, AnyType)):
-                    # ParamSpec is valid in *args but it can't be unpacked.
-                    return star_args_type
-                return UnpackType(star_args_type)
-
-            # we are trying to map *args to positional arguments.
-            if self.context.is_tuple_instance_type(star_args_type):
-                return star_args_type.args[0]
-            elif isinstance(star_args_type, TupleType):
-                # Get the next tuple item of a tuple *arg.
-                if self.tuple_index >= len(star_args_type.items):
-                    # Exhausted a tuple -- continue to the next *args.
-                    self.tuple_index = 1
-                else:
-                    self.tuple_index += 1
-                item = star_args_type.items[self.tuple_index - 1]
-                if isinstance(item, UnpackType) and not allow_unpack:
-                    # An unpack item that doesn't have special handling, use upper bound as above.
-                    unpacked = get_proper_type(item.type)
-                    if isinstance(unpacked, TypeVarTupleType):
-                        fallback = get_proper_type(unpacked.upper_bound)
-                    else:
-                        fallback = unpacked
-                    assert (
-                        isinstance(fallback, Instance)
-                        and fallback.type.fullname == "builtins.tuple"
+            # we are mapping an actual *args input to a *args formal argument.
+            if formal_kind == ARG_STAR:
+                if isinstance(star_args_type, TupleType):
+                    # get the slice from the current index to the end of the tuple.
+                    return star_args_type.slice(
+                        self.tuple_index, None, None, fallback=self.context.tuple_type
                     )
-                    item = fallback.args[0]
-                return item
-            elif isinstance(star_args_type, ParamSpecType):
-                # ParamSpec is valid in *args but it can't be unpacked.
-                return star_args_type
+                elif isinstance(star_args_type, ParamSpecType | AnyType):
+                    # otherwise, just return the type as-is.
+                    return star_args_type
+                else:
+                    assert_never(star_args_type)
+
+            # we are mapping an actual *args to positional arguments.
+            elif formal_kind in (ARG_POS, ARG_OPT):
+                if isinstance(star_args_type, TupleType):
+                    if self.tuple_index >= len(star_args_type.items):
+                        return UninhabitedType()
+
+                    item = star_args_type.items[self.tuple_index]
+                    p_t = get_proper_type(item)
+                    if isinstance(p_t, UnpackType):
+                        unpacked = get_proper_type(p_t.type)
+                        if isinstance(unpacked, TypeVarTupleType):
+                            return unpacked.tuple_fallback.args[0]
+                        elif self.context.is_tuple_instance_type(unpacked):
+                            # If the unpacked type is a tuple, return the first item.
+                            return unpacked.args[0]
+                        else:
+                            raise TypeError(
+                                f"Unexpected unpacked type {unpacked} in expanded *args type."
+                                f"\n\toriginal type: {original_actual}"
+                                f"\n\texpanded type: {star_args_type}"
+                            )
+                    else:
+                        self.tuple_index += 1
+                        if self.tuple_index >= len(star_args_type.items):
+                            # tuple is exhausted, reset the index.
+                            self.tuple_index = 0
+                        return p_t
+
+                elif isinstance(star_args_type, ParamSpecType | AnyType):
+                    return star_args_type
+                else:
+                    assert_never(star_args_type)
             else:
-                return AnyType(TypeOfAny.from_error)
+                raise ValueError(f"Unexpected formal kind {formal_kind} for *args")
         elif actual_kind == nodes.ARG_STAR2:
             from mypy.subtypes import is_subtype
 
@@ -404,54 +399,60 @@ class ArgTypeExpander:
             return self._solve_as_iterable(p_t)
         return AnyType(TypeOfAny.from_error)
 
-    def parse_star_args_type(self, typ: Type) -> TupleType | TupleInstanceType | ParamSpecType:
-        """Parse the type of a ``*args`` argument into a tuple-like type.
+    def parse_star_args_type(self, typ: Type) -> FlatTuple | ParamSpecType | AnyType:
+        """Parse the type of ``*args`` argument into a tuple or paramspec type.
 
         Examples:
-            list[int] -> tuple[int, ...]
-            list[int] | list[str] -> tuple[int | str, ...]
+            tuple[int, int] -> tuple[int, int
+            list[int] -> tuple[*tuple[int, ...]]
+            list[int] | list[str] -> tuple[*tuple[int | str, ...]]
+            Ts -> tuple[*Ts]
 
-        Returns one of TupleType, TupleInstanceType, ParamSpecType.
-        Returns `tuple[AnyType(TypeOfAny.from_errors), ...]` if the type cannot be parsed or is invalid.
+        Returns `Any` if the type cannot be parsed or is invalid.
         """
         p_t = get_proper_type(typ)
-        if isinstance(p_t, (TupleType, ParamSpecType)):
+        if isinstance(p_t, ParamSpecType | AnyType):
             # just return the type as-is
             return p_t
+        elif isinstance(p_t, TupleType):
+            # ensure the tuple is flattened.
+            flat_tuple = TupleType(flatten_nested_tuples(p_t.items), fallback=p_t.partial_fallback)
+            return cast(FlatTuple, flat_tuple)
         elif isinstance(p_t, TypeVarTupleType):
-            return self.parse_star_args_type(p_t.upper_bound)
+            flat_tuple = TupleType([UnpackType(p_t)], fallback=p_t.tuple_fallback)
+            return cast(FlatTuple, flat_tuple)
         elif isinstance(p_t, UnionType):
             proper_items = [get_proper_type(t) for t in p_t.items]
             # consider 2 cases:
 
-            # 1. Union of tuple
+            # 1. Union of tuple -> tuple
             if all(isinstance(t, TupleType) for t in proper_items):
                 proper_items = cast("list[TupleType]", proper_items)
-                combined = self.combine_tuple_types(proper_items)
-                print(proper_items, combined)
-                return combined
+                return self.combine_tuple_types(proper_items)
             # 2. Union of iterable types, e.g. Iterable[A] | Iterable[B]
-            #    In this case return tuple[A | B, ...]
+            #    In this case return tuple[*tuple[A | B, ...]]
             else:
                 converted_types = [self.as_iterable_type(p_i) for p_i in proper_items]
                 if all(self.context.is_iterable_instance_type(it) for it in converted_types):
                     # all items are iterable, return tuple[T1 | T2 | ... | Tn, ...]
                     iterables = cast("list[IterableType]", converted_types)
                     arg = make_simplified_union([it.args[0] for it in iterables])
-                    return self.context.make_tuple_instance_type(arg)
+                    inner_tuple = self.context.make_tuple_instance_type(arg)
+                    return TupleType([UnpackType(inner_tuple)], fallback=inner_tuple)
                 else:
                     # some items in the union are not iterable, return AnyType
                     error_type = AnyType(TypeOfAny.from_error)
-                    return self.context.make_tuple_instance_type(error_type)
+                    return error_type
         else:
             parsed = self.as_iterable_type(p_t)
             if self.context.is_iterable_instance_type(parsed):
-                return self.context.make_tuple_instance_type(parsed.args[0])
+                inner_tuple = self.context.make_tuple_instance_type(parsed.args[0])
+                return TupleType([UnpackType(inner_tuple)], fallback=inner_tuple)
             # the argument is not iterable
             error_type = AnyType(TypeOfAny.from_error)
-            return self.context.make_tuple_instance_type(error_type)
+            return error_type
 
-    def combine_tuple_types(self, types: Sequence[TupleType]) -> TupleType:
+    def combine_tuple_types(self, types: Sequence[TupleType]) -> FlatTuple:
         head, body, tail = split_union_of_tuple_types(types)
         fallback = self.context.tuple_type
         if body:
@@ -465,10 +466,12 @@ class ArgTypeExpander:
             else:
                 assert_never(virtual_iterable)
             variable_part = self.context.make_tuple_instance_type(body_arg)
-            return TupleType([*head, UnpackType(variable_part), *tail], fallback=fallback)
+            flat_tuple = TupleType([*head, UnpackType(variable_part), *tail], fallback=fallback)
+            return cast(FlatTuple, flat_tuple)
         # there are neither tail nor body items, so we return just the head part
         assert not tail
-        return TupleType(head, fallback=fallback)
+        result = TupleType(head, fallback=fallback)
+        return cast(FlatTuple, result)
 
     # def _combine_tuple_types(self, types: Sequence[TupleType]) -> TupleType:
     #     """Combine multiple tuple types into a single tuple type.
@@ -574,7 +577,7 @@ class ArgTypeExpander:
     #     assert not target_tail_items
     #     return TupleType(target_head_items, fallback=fallback)
 
-    def combine_finite_tuple_types(self, types: Sequence[FiniteTupleType]) -> TupleType:
+    def combine_finite_tuple_types(self, types: Sequence[FiniteTuple]) -> TupleType:
         """Combine multiple finite tuple types into a single tuple type.
 
         The result is an upper bound for the union of the input tuple types.
@@ -642,9 +645,9 @@ class ArgTypeExpander:
         return result
 
 
-def normalize_finite_tuple_type(typ: FiniteTupleType) -> FiniteTupleType:
+def normalize_finite_tuple_type(typ: FiniteTuple) -> FiniteTuple:
     """Normalize a tuple type to a FiniteTupleType."""
-    return FiniteTupleType(flatten_nested_tuples(typ), fallback=typ.partial_fallback)
+    return FiniteTuple(flatten_nested_tuples(typ), fallback=typ.partial_fallback)
 
 
 def is_tuple_instance_type(typ: Type) -> TypeIs[TupleInstanceType]:
@@ -659,7 +662,7 @@ def is_tuple_like_type(typ: Type) -> TypeIs[TupleLikeType]:
     return isinstance(p_t, TupleType | TypeVarTupleType) or is_tuple_instance_type(p_t)
 
 
-def is_finite_tuple_type(typ: Type) -> TypeIs[FiniteTupleType]:
+def is_finite_tuple_type(typ: Type) -> TypeIs[FiniteTuple]:
     """Check if the type is a finite tuple type."""
     p_t = get_proper_type(typ)
 

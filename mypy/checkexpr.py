@@ -1739,22 +1739,23 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
         if var_arg and isinstance(var_arg.typ, UnpackType):
             # It is hard to support multiple variadic unpacks (except for old-style *args: int),
             # fail gracefully to avoid crashes later.
-            seen_unpack = False
+            seen_unpack = 0
             for arg, arg_kind in zip(args, arg_kinds):
                 if arg_kind != ARG_STAR:
                     continue
                 arg_type = get_proper_type(self.accept(arg))
-                if not isinstance(arg_type, TupleType) or any(
-                    isinstance(t, UnpackType) for t in arg_type.items
-                ):
-                    if seen_unpack:
-                        self.msg.fail(
-                            "Passing multiple variadic unpacks in a call is not supported",
-                            context,
-                            code=codes.CALL_ARG,
-                        )
-                        return AnyType(TypeOfAny.from_error), callee
-                    seen_unpack = True
+                if isinstance(arg_type, TupleType):
+                    seen_unpack += sum(isinstance(t, UnpackType) for t in arg_type.proper_items())
+                else:
+                    seen_unpack += 1
+
+                if seen_unpack > 1:
+                    self.msg.fail(
+                        "Passing multiple variadic unpacks in a call is not supported",
+                        context,
+                        code=codes.CALL_ARG,
+                    )
+                    return AnyType(TypeOfAny.from_error), callee
 
         # This is tricky: return type may contain its own type variables, like in
         # def [S] (S) -> def [T] (T) -> tuple[S, T], so we need to update their ids
@@ -2547,6 +2548,21 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                 )
                 self.msg.invalid_keyword_var_arg(arg_type, is_mapping, context)
 
+        # We need a different approach:
+        # 1. We need to keep track when an actual is consumed and mark it as such.
+        # 2. We need to carefully deal with given and expected variable size tuples.
+        # 3. `*args` can be annotated with any unpacked tuple and expect trailing items
+        #    for example *args: *tuple[*tuple[int, ...], str]
+        # 4. Currently, mypy does not support passing multiple variadics in a single call,
+
+        # In the context of argument checking, we treat tuple[T, ...] as
+        #   AnyOf[tuple[()], tuple[T], tuple[T, T], tuple[T,T,T], ...]
+        # rather than
+        #   Union[tuple[()], tuple[T], tuple[T, T], tuple[T,T,T], ...]
+        # The difference being that AnyOf is assignable wherever any single member
+        # is assignable, while Union requires all members to be assignable.
+        # See: https://github.com/python/typing/issues/566
+
         for i, actuals in enumerate(formal_to_actual):
             orig_callee_arg_type = get_proper_type(callee.arg_types[i])
             orig_callee_arg_kind = callee.arg_kinds[i]
@@ -2648,24 +2664,23 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
 
             assert len(callee_arg_types) == len(actual_types)
             assert len(callee_arg_types) == len(callee_arg_kinds)
-            for actual, actual_type, actual_kind, callee_arg_type, callee_arg_kind in zip(  #
+            for (
+                actual,
+                actual_type,
+                actual_kind,
+                callee_arg_type,
+                callee_arg_kind,
+            ) in zip(  #
                 actuals, actual_types, actual_kinds, callee_arg_types, callee_arg_kinds
-            ):
+            ):  # fmt: skip
                 # p_callee_arg_type = get_proper_type(callee_arg_type)
                 # if callee_arg_kind == ARG_STAR and actual_kind == ARG_STAR and not isinstance(p_callee_arg_type, ParamSpecType | UnpackType):
                 #     # We have an annotation like ``*args: T``, treat it as if we had *args: *tuple[T, ...]
                 #     callee_arg_type = UnpackType(mapper.context.make_tuple_instance_type(callee_arg_type))
 
-                # allow_unpack = (callee_arg_kind == ARG_STAR) and (actual_kind == ARG_STAR)
-                allow_unpack = isinstance(callee_arg_type, UnpackType)
-
                 # Check that a *arg is valid as varargs.
                 expanded_actual = mapper.expand_actual_type(
-                    actual_type,
-                    actual_kind,
-                    callee.arg_names[i],
-                    callee_arg_kind,
-                    allow_unpack=allow_unpack,
+                    actual_type, actual_kind, callee.arg_names[i], callee_arg_kind
                 )
 
                 # print(
@@ -2679,7 +2694,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                 #     f"\n\t{orig_callee_arg_kind=}",
                 #     f"\n\t{is_subtype(expanded_actual, callee_arg_type)=}",
                 #     f"\n\t{expanded_tuple=}",
-                #     f"\n\t{allow_unpack=}",
+                #     f"\n\t{formal_to_actual=}",
                 #     flush=True,
                 # )
 

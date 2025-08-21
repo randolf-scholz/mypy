@@ -143,17 +143,18 @@ class C:
     def __contains__(self, a: A) -> bool:
         pass
 [file builtins.py]
-from typing import Generic, TypeVar
-T = TypeVar('T')
 class object:
   def __init__(self): pass
-class tuple(Generic[T]): pass
 class bool: pass
 class int: pass
 class type: pass
 class function: pass
 class str: pass
 class dict: pass
+from typing import Mapping, Generic, Iterator, TypeVar
+_Tuple_co = TypeVar('_Tuple_co', covariant=True)
+class tuple(Generic[_Tuple_co]):
+    def __iter__(self) -> Iterator[_Tuple_co]: pass
 
 [case testBinaryOperationsWithDynamicAsRightOperand]
 from typing import Any
@@ -219,17 +220,18 @@ class A:
 
 class C: pass
 [file builtins.py]
-from typing import Generic, TypeVar
-T = TypeVar('T')
 class object:
   def __init__(self): pass
-class tuple(Generic[T]): pass
 class bool: pass
 class int: pass
 class type: pass
 class function: pass
 class str: pass
 class dict: pass
+from typing import Mapping, Generic, Iterator, TypeVar
+_Tuple_co = TypeVar('_Tuple_co', covariant=True)
+class tuple(Generic[_Tuple_co]):
+    def __iter__(self) -> Iterator[_Tuple_co]: pass
 
 [case testDynamicWithUnaryExpressions]
 from typing import Any

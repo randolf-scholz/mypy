@@ -1543,13 +1543,13 @@ def foo(arg: Tuple[int, Unpack[Ts], str]) -> None:
     reveal_type(z1)  # N: Revealed type is "Any"
     x2, *y2, z2 = arg
     reveal_type(x2)  # N: Revealed type is "builtins.int"
-    reveal_type(y2)  # N: Revealed type is "builtins.list[builtins.object]"
+    reveal_type(y2)  # N: Revealed type is "builtins.list[Any]"
     reveal_type(z2)  # N: Revealed type is "builtins.str"
     x3, *y3 = arg
     reveal_type(x3)  # N: Revealed type is "builtins.int"
-    reveal_type(y3)  # N: Revealed type is "builtins.list[builtins.object]"
+    reveal_type(y3)  # N: Revealed type is "builtins.list[Any]"
     *y4, z4 = arg
-    reveal_type(y4)  # N: Revealed type is "builtins.list[builtins.object]"
+    reveal_type(y4)  # N: Revealed type is "builtins.list[Any]"
     reveal_type(z4)  # N: Revealed type is "builtins.str"
     x5, xx5, *y5, z5, zz5 = arg  # E: Too many assignment targets for variadic unpack
     reveal_type(x5)  # N: Revealed type is "Any"
@@ -1652,7 +1652,8 @@ def foo(arg: Tuple[int, Unpack[Ts], str]) -> None:
     y = 1, *arg, 2
     reveal_type(y)  # N: Revealed type is "tuple[builtins.int, builtins.int, Unpack[Ts`-1], builtins.str, builtins.int]"
     z = (*arg, *arg)
-    reveal_type(z)  # N: Revealed type is "builtins.tuple[builtins.object, ...]"
+    # TODO: can we do something better here?
+    reveal_type(z)  # N: Revealed type is "builtins.tuple[Any, ...]"
 [builtins fixtures/tuple.pyi]
 
 [case testPackingVariadicTuplesHomogeneous]
@@ -1688,8 +1689,8 @@ reveal_type({1, *vt})  # N: Revealed type is "builtins.set[builtins.float]"
 
 Ts = TypeVarTuple("Ts")
 def foo(arg: Tuple[int, Unpack[Ts], str]) -> None:
-    reveal_type([1, *arg])  # N: Revealed type is "builtins.list[builtins.object]"
-    reveal_type({1, *arg})  # N: Revealed type is "builtins.set[builtins.object]"
+    reveal_type([1, *arg])  # N: Revealed type is "builtins.list[Any]"
+    reveal_type({1, *arg})  # N: Revealed type is "builtins.set[Any]"
 [builtins fixtures/isinstancelist.pyi]
 
 [case testVariadicTupleInTupleContext]

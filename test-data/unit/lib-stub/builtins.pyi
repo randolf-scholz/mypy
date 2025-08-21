@@ -23,7 +23,7 @@ class function:
     __name__: str
 class ellipsis: pass
 
-from typing import Generic, Iterator, Iterable, Sequence, TypeVar
+from typing import Generic, Iterator, Sequence, TypeVar
 _T = TypeVar('_T')
 _Tuple_co = TypeVar('_Tuple_co', covariant=True)
 class tuple(Generic[_Tuple_co]):

@@ -2897,6 +2897,20 @@ class TupleType(ProperType):
             slice_items = self.items[begin:end:stride]
         return TupleType(slice_items, fallback, self.line, self.column, self.implicit)
 
+    # TODO: should this be cached?
+    def proper_items(self) -> list[ProperType]:
+        """Return a list of proper types for the items in this tuple (flattened)."""
+        res = []
+        for typ in self.items:
+            p_t = get_proper_type(typ)
+            if isinstance(p_t, UnpackType) and isinstance(
+                unpacked := get_proper_type(p_t.type), TupleType
+            ):
+                res.extend(unpacked.proper_items)
+            else:
+                res.append(p_t)
+        return res
+
 
 class TypedDictType(ProperType):
     """Type of TypedDict object {'k1': v1, ..., 'kn': vn}.
@@ -3386,6 +3400,18 @@ class UnionType(ProperType):
     @classmethod
     def read(cls, data: Buffer) -> UnionType:
         return UnionType(read_type_list(data), uses_pep604_syntax=read_bool(data))
+
+    def proper_items(self) -> list[ProperType]:
+        """Return a list of proper types for the items in this union (flattened)."""
+        # similar to flatten_nested_unions, but expands type aliases
+        res = []
+        for typ in self.items:
+            p_t = get_proper_type(typ)
+            if isinstance(p_t, UnionType):
+                res.extend(p_t.proper_items())
+            else:
+                res.append(p_t)
+        return res
 
 
 class PartialType(ProperType):

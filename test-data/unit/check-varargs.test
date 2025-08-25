@@ -567,7 +567,7 @@ def test_union_fixed_size_and_variadic_tuple(
 ) -> None:
     reveal_type( as_tuple(*x1) )  # N: Revealed type is "builtins.tuple[Union[__main__.A, __main__.B, __main__.C, None], ...]"
     reveal_type( as_tuple(*y1) )  # N: Revealed type is "builtins.tuple[Union[__main__.A, __main__.B, __main__.C, None], ...]"
-    reveal_type( as_tuple(*x2) )  # N: Revealed type is "tuple[Union[__main__.A, None], Unpack[builtins.tuple[Union[None, __main__.B], ...]], Union[__main__.C, None]]"
+    reveal_type( as_tuple(*x2) )  # N: Revealed type is "tuple[Union[__main__.A, None], Unpack[builtins.tuple[Union[__main__.B, None], ...]], Union[__main__.C, None]]"
     reveal_type( as_tuple(*y2) )  # N: Revealed type is "tuple[Union[__main__.A, None], Unpack[builtins.tuple[Union[__main__.B, None], ...]], Union[__main__.C, None]]"
 
 def test_union_variable_size_tuples(
@@ -648,7 +648,7 @@ def test_union_fixed_size_and_variadic_tuple(
 ) -> None:
     reveal_type( (*x1,) )  # N: Revealed type is "builtins.tuple[Union[__main__.A, __main__.B, __main__.C, None], ...]"
     reveal_type( (*y1,) )  # N: Revealed type is "builtins.tuple[Union[__main__.A, __main__.B, __main__.C, None], ...]"
-    reveal_type( (*x2,) )  # N: Revealed type is "tuple[Union[__main__.A, None], Unpack[builtins.tuple[Union[None, __main__.B], ...]], Union[__main__.C, None]]"
+    reveal_type( (*x2,) )  # N: Revealed type is "tuple[Union[__main__.A, None], Unpack[builtins.tuple[Union[__main__.B, None], ...]], Union[__main__.C, None]]"
     reveal_type( (*y2,) )  # N: Revealed type is "tuple[Union[__main__.A, None], Unpack[builtins.tuple[Union[__main__.B, None], ...]], Union[__main__.C, None]]"
 
 def test_union_variable_size_tuples(
@@ -1715,3 +1715,19 @@ foo(key="yes", value="ok")
 bad: Callable[[*TD], None]  # E: "TD" cannot be unpacked (must be tuple or TypeVarTuple)
 [builtins fixtures/dict.pyi]
 [typing fixtures/typing-typeddict.pyi]
+
+
+
+[case testStarArgsWithConcatenateParamSpec]
+from typing import Callable
+from typing_extensions import Concatenate, ParamSpec
+
+P = ParamSpec('P')
+
+def test(
+    fn: Callable[Concatenate[int, P], int],
+    *args: P.args,
+    **kwargs: P.kwargs,
+) -> None:
+    fn(*(1, *args), **kwargs)
+[builtins fixtures/tuple.pyi]

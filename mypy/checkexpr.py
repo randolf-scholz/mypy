@@ -14,7 +14,12 @@ from typing_extensions import TypeAlias as _TypeAlias, assert_never
 import mypy.checker
 import mypy.errorcodes as codes
 from mypy import applytype, erasetype, join, message_registry, nodes, operators, types
-from mypy.argmap import ArgTypeExpander, map_actuals_to_formals, map_formals_to_actuals
+from mypy.argmap import (
+    ArgTypeExpander,
+    map_actuals_to_formals,
+    map_formals_to_actuals,
+    parse_star_args_type,
+)
 from mypy.checker_shared import ExpressionCheckerSharedApi
 from mypy.checkmember import analyze_member_access, has_operator
 from mypy.checkstrformat import StringFormatterChecker
@@ -2517,6 +2522,231 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                         context,
                     )
 
+    def new_check_argument_types(
+        self,
+        arg_types: list[Type],
+        arg_kinds: list[ArgKind],
+        args: list[Expression],
+        callee: CallableType,
+        formal_to_actual: list[list[int]],
+        context: Context,
+        check_arg: ArgChecker | None = None,
+        object_type: Type | None = None,
+    ) -> None:
+        """Check argument types against a callable type.
+
+        Report errors if the argument types are not compatible.
+
+        The check_call docstring describes some of the arguments.
+        """
+        check_arg = check_arg or self.check_arg
+        # Keep track of consumed tuple *arg items.
+        mapper = ArgTypeExpander(self.argument_infer_context())
+
+        for arg_type, arg_kind in zip(arg_types, arg_kinds):
+            arg_type = get_proper_type(arg_type)
+            if arg_kind == nodes.ARG_STAR and not self.is_valid_var_arg(arg_type):
+                self.msg.invalid_var_arg(arg_type, context)
+            if arg_kind == nodes.ARG_STAR2 and not self.is_valid_keyword_var_arg(arg_type):
+                is_mapping = is_subtype(
+                    arg_type, self.chk.named_type("_typeshed.SupportsKeysAndGetItem")
+                )
+                self.msg.invalid_keyword_var_arg(arg_type, is_mapping, context)
+
+        # We need a different approach:
+        # 1. We need to keep track when an actual is consumed and mark it as such.
+        # 2. We need to carefully deal with given and expected variable size tuples.
+        # 3. `*args` can be annotated with any unpacked tuple and expect trailing items
+        #    for example *args: *tuple[*tuple[int, ...], str]
+        # 4. Currently, mypy does not support passing multiple variadics in a single call,
+
+        # goal: we want to go over the arguments one by one and raise an error if the k-th argument
+        # does not match the mapped formal argument.
+
+        # Issues;
+
+        # 1. calling foo(*x1, *x2, ..., *x7).
+        # If we know the length of each xk, the mapping will be 1:1
+        # but if e.g. x1 is variable size, then we do not know which items mapped to which entry.
+
+        # Let's consider two cases:
+
+        # 1. formal_kind is a single positional ARG_POS or ARG_OPT
+        #    possible arg_kinds are:
+        #    - A single ARG_POS
+        #    - One or more ARG_STAR
+        #    - multiple ARG_STAR can happen
+
+        # In the context of argument checking, we treat tuple[T, ...] as
+        #   AnyOf[tuple[()], tuple[T], tuple[T, T], tuple[T,T,T], ...]
+        # rather than
+        #   Union[tuple[()], tuple[T], tuple[T, T], tuple[T,T,T], ...]
+        # The difference being that AnyOf is assignable wherever any single member
+        # is assignable, while Union requires all members to be assignable.
+        # See: https://github.com/python/typing/issues/566
+
+        # implementation of the new algorithm.
+
+        for i, actuals in enumerate(formal_to_actual):
+            orig_callee_arg_type = get_proper_type(callee.arg_types[i])
+            orig_callee_arg_kind = callee.arg_kinds[i]
+
+            # Checking the case that we have more than one item but the first argument
+            # is an unpack, so this would be something like:
+            # [Tuple[Unpack[Ts]], int]
+            #
+            # In this case we have to check everything together, we do this by re-unifying
+            # the suffices to the tuple, e.g. a single actual like
+            # Tuple[Unpack[Ts], int]
+            expanded_tuple = False
+            actual_kinds = [arg_kinds[a] for a in actuals]
+            if len(actuals) > 1:
+                p_actual_type = get_proper_type(arg_types[actuals[0]])
+                if (
+                    isinstance(p_actual_type, TupleType)
+                    and len(p_actual_type.items) == 1
+                    and isinstance(p_actual_type.items[0], UnpackType)
+                    and actual_kinds == [nodes.ARG_STAR] + [nodes.ARG_POS] * (len(actuals) - 1)
+                ):
+                    actual_types = [p_actual_type.items[0]] + [arg_types[a] for a in actuals[1:]]
+                    if isinstance(orig_callee_arg_type, UnpackType):
+                        p_callee_type = get_proper_type(orig_callee_arg_type.type)
+                        if isinstance(p_callee_type, TupleType):
+                            assert p_callee_type.items
+                            callee_arg_types = p_callee_type.items
+                            callee_arg_kinds = [nodes.ARG_STAR] + [nodes.ARG_POS] * (
+                                len(p_callee_type.items) - 1
+                            )
+                            expanded_tuple = True
+
+            if not expanded_tuple:
+                actual_types = [arg_types[a] for a in actuals]
+
+                if orig_callee_arg_kind == ARG_STAR:
+                    if isinstance(orig_callee_arg_type, UnpackType):
+                        XXX = orig_callee_arg_type
+                    elif isinstance(orig_callee_arg_type, ParamSpecType):
+                        XXX = orig_callee_arg_type
+                    else:
+                        # treat ``*args: T`` annotation as if ``*args: *tuple[T, ...]``
+                        as_tuple = mapper.context.make_tuple_instance_type(orig_callee_arg_type)
+                        XXX = UnpackType(as_tuple)
+                else:
+                    XXX = orig_callee_arg_type
+
+                if isinstance(XXX, UnpackType):
+                    unpacked_type = get_proper_type(XXX.type)
+                    if isinstance(unpacked_type, TupleType):
+                        inner_unpack_index = find_unpack_in_list(unpacked_type.items)
+                        if inner_unpack_index is None:
+                            callee_arg_types = unpacked_type.items
+                            callee_arg_kinds = [ARG_POS] * len(actuals)
+                        else:
+                            inner_unpack = unpacked_type.items[inner_unpack_index]
+                            assert isinstance(inner_unpack, UnpackType)
+                            inner_unpacked_type = get_proper_type(inner_unpack.type)
+                            if isinstance(inner_unpacked_type, TypeVarTupleType):
+                                # This branch mimics the expanded_tuple case above but for
+                                # the case where caller passed a single * unpacked tuple argument.
+                                callee_arg_types = unpacked_type.items
+                                callee_arg_kinds = [
+                                    ARG_POS if i != inner_unpack_index else ARG_STAR
+                                    for i in range(len(unpacked_type.items))
+                                ]
+                            else:
+                                # We assume heterogeneous tuples are desugared earlier.
+                                assert isinstance(inner_unpacked_type, Instance)
+                                assert inner_unpacked_type.type.fullname == "builtins.tuple"
+                                callee_arg_types = (
+                                    unpacked_type.items[:inner_unpack_index]
+                                    + [inner_unpacked_type.args[0]]
+                                    * (len(actuals) - len(unpacked_type.items) + 1)
+                                    + unpacked_type.items[inner_unpack_index + 1 :]
+                                )
+                                callee_arg_kinds = [ARG_POS] * len(actuals)
+                    elif isinstance(unpacked_type, TypeVarTupleType):
+                        callee_arg_types = [orig_callee_arg_type]
+                        callee_arg_kinds = [ARG_STAR]
+                    else:
+                        assert isinstance(unpacked_type, Instance)
+                        assert unpacked_type.type.fullname == "builtins.tuple"
+                        callee_arg_types = [unpacked_type.args[0]] * len(actuals)
+                        callee_arg_kinds = [ARG_POS] * len(actuals)
+                else:
+                    # assert not isinstance(orig_callee_arg_type, UnpackType)
+                    callee_arg_types = [orig_callee_arg_type] * len(actuals)
+                    callee_arg_kinds = [orig_callee_arg_kind] * len(actuals)
+
+            assert len(actual_types) == len(actuals) == len(actual_kinds)
+
+            if len(callee_arg_types) != len(actual_types):
+                if len(actual_types) > len(callee_arg_types):
+                    self.chk.msg.too_many_arguments(callee, context)
+                else:
+                    self.chk.msg.too_few_arguments(callee, context, None)
+                continue
+
+            assert len(callee_arg_types) == len(actual_types)
+            assert len(callee_arg_types) == len(callee_arg_kinds)
+            for (
+                    actual,
+                    actual_type,
+                    actual_kind,
+                    callee_arg_type,
+                    callee_arg_kind,
+            ) in zip(  #
+                actuals, actual_types, actual_kinds, callee_arg_types, callee_arg_kinds
+            ):  # fmt: skip
+                # p_callee_arg_type = get_proper_type(callee_arg_type)
+                if callee_arg_kind == ARG_STAR and isinstance(callee_arg_type, UnpackType):
+                    unpacked = get_proper_type(callee_arg_type.type)
+                    if isinstance(unpacked, TupleType):
+                        fallback = unpacked.partial_fallback
+                    elif isinstance(unpacked, TypeVarTupleType):
+                        fallback = unpacked.tuple_fallback
+                    elif isinstance(unpacked, Instance):
+                        fallback = unpacked.fallback
+                    else:
+                        raise NotImplementedError
+                    callee_arg_type = TupleType([callee_arg_type], fallback=fallback)
+
+                # if callee_arg_kind == ARG_STAR and actual_kind == ARG_STAR and not isinstance(p_callee_arg_type, ParamSpecType | UnpackType):
+                #     # We have an annotation like ``*args: T``, treat it as if we had *args: *tuple[T, ...]
+                #     callee_arg_type = UnpackType(mapper.context.make_tuple_instance_type(callee_arg_type))
+
+                # Check that a *arg is valid as varargs.
+                expanded_actual = mapper.expand_actual_type(
+                    actual_type, actual_kind, callee.arg_names[i], callee_arg_kind
+                )
+
+                # print(
+                #     f"Checking arg {i + 1}:"
+                #     f"\n\texpanded_actual: {expanded_actual}"
+                #     f"\n\tactual_type: {actual_type}"
+                #     f"\n\tactual_kind: {actual_kind}"
+                #     f"\n\tcallee_arg_type: {callee_arg_type}"
+                #     f"\n\tcallee_arg_kind: {callee_arg_kind}"
+                #     f"\n\t{orig_callee_arg_type=}"
+                #     f"\n\t{orig_callee_arg_kind=}",
+                #     f"\n\t{is_subtype(expanded_actual, callee_arg_type)=}",
+                #     f"\n\t{expanded_tuple=}",
+                #     f"\n\t{formal_to_actual=}",
+                #     flush=True,
+                # )
+
+                check_arg(
+                    expanded_actual,
+                    actual_type,
+                    actual_kind,
+                    callee_arg_type,
+                    actual + 1,
+                    i + 1,
+                    callee,
+                    object_type,
+                    args[actual],
+                    context,
+                )
+
     def check_argument_types(
         self,
         arg_types: list[Type],
@@ -2554,6 +2784,23 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
         # 3. `*args` can be annotated with any unpacked tuple and expect trailing items
         #    for example *args: *tuple[*tuple[int, ...], str]
         # 4. Currently, mypy does not support passing multiple variadics in a single call,
+
+        # goal: we want to go over the arguments one by one and raise an error if the k-th argument
+        # does not match the mapped formal argument.
+
+        # Issues;
+
+        # 1. calling foo(*x1, *x2, ..., *x7).
+        # If we know the length of each xk, the mapping will be 1:1
+        # but if e.g. x1 is variable size, then we do not know which items mapped to which entry.
+
+        # Let's consider two cases:
+
+        # 1. formal_kind is a single positional ARG_POS or ARG_OPT
+        #    possible arg_kinds are:
+        #    - A single ARG_POS
+        #    - One or more ARG_STAR
+        #    - multiple ARG_STAR can happen
 
         # In the context of argument checking, we treat tuple[T, ...] as
         #   AnyOf[tuple[()], tuple[T], tuple[T, T], tuple[T,T,T], ...]
@@ -2674,6 +2921,18 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                 actuals, actual_types, actual_kinds, callee_arg_types, callee_arg_kinds
             ):  # fmt: skip
                 # p_callee_arg_type = get_proper_type(callee_arg_type)
+                if callee_arg_kind == ARG_STAR and isinstance(callee_arg_type, UnpackType):
+                    unpacked = get_proper_type(callee_arg_type.type)
+                    if isinstance(unpacked, TupleType):
+                        fallback = unpacked.partial_fallback
+                    elif isinstance(unpacked, TypeVarTupleType):
+                        fallback = unpacked.tuple_fallback
+                    elif isinstance(unpacked, Instance):
+                        fallback = unpacked
+                    else:
+                        raise NotImplementedError
+                    callee_arg_type = TupleType([callee_arg_type], fallback=fallback)
+
                 # if callee_arg_kind == ARG_STAR and actual_kind == ARG_STAR and not isinstance(p_callee_arg_type, ParamSpecType | UnpackType):
                 #     # We have an annotation like ``*args: T``, treat it as if we had *args: *tuple[T, ...]
                 #     callee_arg_type = UnpackType(mapper.context.make_tuple_instance_type(callee_arg_type))
@@ -5327,8 +5586,9 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                     ctx = None
                 original_arg_type = self.accept(item.expr, ctx)
                 # convert arg type to one of TupleType, TupleInstanceType, AnyType
-                arg_type_expander = ArgTypeExpander(self.argument_infer_context())
-                star_args_type = arg_type_expander.parse_star_args_type(original_arg_type)
+                star_args_type = parse_star_args_type(
+                    original_arg_type, self.argument_infer_context()
+                )
                 if isinstance(star_args_type, TupleType):
                     if find_unpack_in_list(star_args_type.items) is not None:
                         if seen_unpack_in_items:

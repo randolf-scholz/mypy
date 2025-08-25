@@ -1194,7 +1194,7 @@ class TypeList(ProperType):
         self.items = items
 
     def accept(self, visitor: TypeVisitor[T]) -> T:
-        assert isinstance(visitor, SyntheticTypeVisitor)
+        assert isinstance(visitor, SyntheticTypeVisitor), f"Got {type(visitor)}"
         ret: T = visitor.visit_type_list(self)
         return ret
 

@@ -9,9 +9,7 @@ from __future__ import annotations
 
 import itertools
 from collections.abc import Iterable, Sequence
-from itertools import chain
 from typing import Any, Callable, TypeVar, cast
-from typing_extensions import TypeGuard
 
 from mypy.checker_state import checker_state
 from mypy.copytype import copy_type
@@ -62,7 +60,6 @@ from mypy.types import (
     UninhabitedType,
     UnionType,
     UnpackType,
-    flatten_nested_tuples,
     flatten_nested_unions,
     get_proper_type,
     get_proper_types,
@@ -1307,179 +1304,5 @@ def can_have_shared_disjoint_base(instances: list[Instance]) -> bool:
         elif base.has_base(candidate.fullname):
             candidate = base
         else:
-            return False
-    return True
-
-
-def split_tuple_type(typ: TupleType) -> tuple[list[Type], list[Type], list[Type]]:
-    r"""Split a tuple into 3 parts: head part, body part and tail part.
-
-    1. A head part which is the longest finite prefix of the tuple
-    2. A body part which covers all items from the first variable item to the last variable item
-    3. A tail part which is the longest finite suffix of the remaining tuple
-
-    If the body part is empty, the tail part is empty as well.
-    The body part, if non-empty, always starts and ends with a variable item (UnpackType).
-    Note that according to the current specification, the body part may contain at maximum
-    a single variable item (UnpackType), so the body part actually should at maximum be
-    of length 1. This implementation should still work if that specification changes in the future.
-
-    Examples:
-        - tuple[int, str] -> (tuple[int, str], tuple[()], tuple[()])
-        - tuple[int, *tuple[int, ...]] -> (tuple[int], tuple[*tuple[int, ...]], tuple[()])
-        - tuple[*tuple[int, ...], int] -> (tuple[())], tuple[*tuple[int, ...]], tuple[int])
-        - tuple[int, *tuple[int, ...], int] -> (tuple[int], tuple[*tuple[int, ...]], tuple[int])
-        - tuple[int, *tuple[int, ...], str, *tuple[str, ...], int]
-          -> (head=tuple[int], variable=tuple[*tuple[int, ...], str, *tuple[str, ...]], tail=tuple[int])
-    """
-    head_items: list[Type] = []
-    tail_items: list[Type] = []
-    body_items: list[Type] = []
-
-    flattened_items = flatten_nested_tuples(typ.items)
-    generator = iter(flattened_items)
-
-    # determine the head part
-    for item in generator:
-        p_t = get_proper_type(item)
-        if isinstance(p_t, UnpackType):
-            body_items.append(item)
-            break
-        head_items.append(item)
-
-    # determine the body and tail parts
-    for item in generator:
-        p_t = get_proper_type(item)
-        if isinstance(p_t, UnpackType):
-            body_items.extend(tail_items)
-            body_items.append(item)
-            tail_items.clear()
-        else:
-            tail_items.append(item)
-
-    return head_items, body_items, tail_items
-
-
-def split_union_of_tuple_types(
-    types: Sequence[TupleType],
-) -> tuple[list[Type], list[Type], list[Type]]:
-    """Combine multiple tuple types, providing an upper bound for the union of the input tuples.
-
-    Because this function is needed in places where we may not have access to the `TypeInfo`
-    of `builtins.tuple`, construction of the resulting tuple is deferred to the caller.
-
-    Note:
-        - For the body part, callers should disregard the order of items.
-        = If all input tuples are of the same (real) size, so is the result.
-
-    Examples:
-        tuple[int, int], tuple[None, None]
-            -> tuple[int | None, int | None]
-
-        tuple[int, *tuple[int, ...], int],
-        tuple[None, *tuple[None, ...], None]
-            -> tuple[int | None, *tuple[int | None, ...], int | None]
-
-        tuple[int, *tuple[int, ...], str, *tuple[str, ...], int]
-        tuple[None, *tuple[None, ...], None]
-            -> tuple[int | None, *tuple[int | str | None, ...], int | None]
-
-    Note:
-        According to the type spec at the time of writing, only one unbounded tuple
-        is allowed in a tuple type, but this code should work even with multiple
-        unbounded tuples, e.g. `tuple[*tuple[None, ...], str, *tuple[None, ...]]`
-        See: https://typing.python.org/en/latest/spec/tuples.html#unpacked-tuple-form
-    """
-    heads: list[list[Type]]
-    bodies: list[list[Type]]
-    tails: list[list[Type]]
-    remaining_head_items: list[list[Type]]
-    remaining_tail_items: list[list[Type]]
-    target_head_items: list[Type] = []
-    target_body_items: list[Type] = []
-    target_tail_items: list[Type] = []
-
-    # split each tuple
-    heads, bodies, tails = zip(*(split_tuple_type(typ) for typ in types))
-
-    # 1. process all heads in parallel, stopping when one of the heads is exhausted
-    shared_head_length = min(len(head) for head in heads)
-    for items in zip(*(head[:shared_head_length] for head in heads)):
-        # append the union of the items to the head part
-        target_head_items.append(make_simplified_union(items))
-    # collect all the remaining head items from generators that were not exhausted
-    remaining_head_items = [head[shared_head_length:] for head in heads]
-
-    # If a tuple has no body items, prepend the remaining head items to the tail.
-    # This addresses cases like combining `tuple[A, B, C]` with `tuple[X, *tuple[Y, ...], Z]`.
-    # which should yield tuple[A | X, *tuple[B | Y, ...], C | Z]
-    for remaining_head, body, tail in zip(remaining_head_items, bodies, tails):
-        if not body:
-            # move all remaining head items to the start of the tail
-            _tail = tail[:]
-            tail.clear()
-            tail.extend(remaining_head)
-            tail.extend(_tail)
-            remaining_head.clear()
-
-    # 2. process all tails in parallel, in reverse, stopping when one of the tails is exhausted
-    shared_tail_length = min(len(tail) for tail in tails)
-    for items in zip(*(tail[-1 : -shared_tail_length - 1 : -1] for tail in tails)):
-        # append the union of the items to the tail part
-        target_tail_items.append(make_simplified_union(items))
-    # collect all the remaining tail items from generators that were not exhausted
-    target_tail_items.reverse()  # reverse to maintain original order
-    remaining_tail_items = [tail[: len(tail) - shared_tail_length] for tail in tails]
-    # note: do not use tail[:-shared_tail_length]; breaks when shared_tail_length=0
-
-    # 3. process all bodies
-    for body in bodies:
-        target_body_items.extend(body)
-
-    # 4. collected all items that will be put into the variable part
-    target_body_items = [
-        *chain.from_iterable(remaining_head_items),
-        *target_body_items,
-        *chain.from_iterable(remaining_tail_items),
-    ]
-    return target_head_items, target_body_items, target_tail_items
-
-
-def all_tuples(types: Sequence[ProperType]) -> TypeGuard[Sequence[TupleType]]:
-    """Check if all types are tuples."""
-    return all(isinstance(typ, TupleType) for typ in types)
-
-
-def is_equal_sized_tuples(types: Sequence[ProperType]) -> TypeGuard[Sequence[TupleType]]:
-    """Check if all types are tuples of the same size.
-
-    We use `flatten_nested_tuples` to deal with nested tuples.
-    Note that the result may still contain
-    """
-    if not types:
-        return True
-
-    iterator = iter(types)
-    typ = next(iterator)
-    if not isinstance(typ, TupleType):
-        return False
-    flattened_elements = flatten_nested_tuples(typ.items)
-    if any(
-        isinstance(get_proper_type(member), (UnpackType, TypeVarTupleType))
-        for member in flattened_elements
-    ):
-        # this can happen e.g. with tuple[int, *tuple[int, ...], int]
-        return False
-    size = len(flattened_elements)
-
-    for typ in iterator:
-        if not isinstance(typ, TupleType):
-            return False
-        flattened_elements = flatten_nested_tuples(typ.items)
-        if len(flattened_elements) != size or any(
-            isinstance(get_proper_type(member), (UnpackType, TypeVarTupleType))
-            for member in flattened_elements
-        ):
-            # this can happen e.g. with tuple[int, *tuple[int, ...], int]
             return False
     return True

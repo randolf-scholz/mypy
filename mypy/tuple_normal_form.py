@@ -7,6 +7,7 @@ from typing_extensions import NewType, TypeAlias as _TypeAlias
 
 from mypy.typeops import make_simplified_union
 from mypy.types import (
+    AnyType,
     Instance,
     ParamSpecType,
     ProperType,
@@ -26,7 +27,7 @@ if TYPE_CHECKING:
 
 
 def show(*args: object) -> None:
-    if True:
+    if False:
         print(*args)
 
 
@@ -54,6 +55,7 @@ def _is_empty_unpack(variadic: UnpackType) -> bool:
             p_t = get_proper_type(item)
             if isinstance(p_t, UnpackType) and _is_empty_unpack(p_t):
                 continue
+            return False
         # empty list
         return True
     elif isinstance(content, UnionType):
@@ -62,6 +64,7 @@ def _is_empty_unpack(variadic: UnpackType) -> bool:
             p_t = get_proper_type(item)
             if isinstance(p_t, UnpackType) and _is_empty_unpack(p_t):
                 continue
+            return False
         # empty union
         return True
     elif isinstance(content, TupleType):
@@ -70,8 +73,11 @@ def _is_empty_unpack(variadic: UnpackType) -> bool:
             p_t = get_proper_type(item)
             if isinstance(p_t, UnpackType) and _is_empty_unpack(p_t):
                 continue
+            return False
         # empty tuple
         return True
+    # fallback: TypeVarTupleType, tuple[T, ...], list[T], etc.
+    # TODO: should we try converting to Iterable[T] and check if T is UninhabitedType?
     return False
 
 
@@ -124,6 +130,16 @@ class TupleNormalForm(NamedTuple):
         """Inspect if the tuple has a variable part."""
         return not _is_empty_unpack(self.variadic)
 
+    @property
+    def minimum_length(self) -> int:
+        """The minimum length of the tuple represented by this TupleNormalForm."""
+        # NOTE: Technically the variadic part could produce additional items,
+        #    if multiple unpacks are present, e.g.
+        #    tuple[int, *tuple[int, ...], str, *tuple[str, ...], str]
+        #    is at least length 3.
+        #    However we treat this as if it were tuple[int, *tuple[T, ...], str]
+        return len(self.prefix) + len(self.suffix)
+
     @staticmethod
     def from_star_arg(star_arg: Type, /) -> TupleNormalForm:
         """Create a TupleNormalForm from a type that was passed as a star argument.
@@ -135,7 +151,6 @@ class TupleNormalForm(NamedTuple):
         On the flipside, when we see *any* variadic type, including
         `TypeVarTupleType`, `ParamSpec.args`, `list[T]`, etc., then we wrap it in
         an `UnpackType` when adding it to the variadic part of the TupleNormalForm.
-
 
         Examples:
             - list[int]                    -> [], [list[int]], []
@@ -462,6 +477,8 @@ class _TupleConstructor:
             return typ
         # otherwise, cast to Iterable[T] using the solver, and then return tuple[T, ...]
         r = self.context.as_iterable_type(unpacked)
+        if isinstance(r, AnyType):
+            return UnpackType(self.context.make_tuple_instance_type(r))
         return UnpackType(self.context.make_tuple_instance_type(r.args[0]))
 
 

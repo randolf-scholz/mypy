@@ -2911,6 +2911,29 @@ class TupleType(ProperType):
                 res.append(p_t)
         return res
 
+    @property
+    def prefix(self) -> list[ProperType]:
+        """The prefix of the tuple before the first Unpack, or the entire tuple."""
+        proper_items = self.proper_items()
+        unpack_index = find_unpack_in_list(proper_items)
+        return proper_items[:unpack_index]
+
+    @property
+    def suffix(self) -> list[ProperType]:
+        """The suffix of the tuple after the last Unpack, or the entire tuple."""
+        proper_items = self.proper_items()
+        unpack_index = find_unpack_in_list(proper_items)
+        if unpack_index is None:
+            return []
+        return proper_items[unpack_index + 1 :]
+
+    @property
+    def is_variadic(self) -> bool:
+        """The variadic item if the tuple has one Unpack, otherwise None."""
+        proper_items = self.proper_items()
+        unpack_index = find_unpack_in_list(proper_items)
+        return unpack_index is not None
+
 
 class TypedDictType(ProperType):
     """Type of TypedDict object {'k1': v1, ..., 'kn': vn}.

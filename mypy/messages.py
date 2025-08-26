@@ -619,8 +619,8 @@ class MessageBuilder:
 
     def incompatible_argument(
         self,
-        n: int,
-        m: int,
+        n: int,  # actual_argument_index (1-based)
+        m: int,  # formal_parameter_index (1-based)
         callee: CallableType,
         arg_type: Type,
         arg_kind: ArgKind,

@@ -290,7 +290,7 @@ def infer_constraints_for_callable(
 
                     if arg_kinds[actual] == ARG_STAR:
                         # Use the expanded form, one of TupleType | IterableType | ParamSpecType | AnyType
-                        star_args_type = mapper.parse_star_args_type(actual_arg_type)
+                        star_args_type = mapper.parse_star_argument(actual_arg_type)
                         if isinstance(star_args_type, TupleType):
                             actual_types.append(expanded_actual)
                         else:

@@ -28,8 +28,9 @@ from mypy.types import (
     TypeVarType,
     UnionType,
     UnpackType,
+    find_unpack_in_list,
     flatten_nested_tuples,
-    get_proper_type, find_unpack_in_list,
+    get_proper_type,
 )
 
 IterableType = NewType("IterableType", Instance)
@@ -204,6 +205,90 @@ class ArgumentInferContext(NamedTuple):
         # convert to Iterable[T] and return T
         parsed_unpack = self.as_iterable_type(unpacked)
         return parsed_unpack.args[0]
+
+    def get_tuple_slice(self, tup: TupleType, the_slice: slice) -> TupleType:
+        r"""Get the type of slicing the tuple.
+
+        It is assumed the tuple is in Tuple Normal Form.
+
+        t = tuple[P1, ..., Pn, *Vs, S1, ..., Sm]
+
+        Depending on the sign of start, the starting point is determined as follows:
+           If start ≥ 0, then start = min(start, n)
+           If start < 0, then start = max(start, -m)
+        which corresponds to taking items from the prefix if start is non-negative,
+        and from the suffix if start is negative, but never going beyond the variadic part.
+
+        slices that 'traverse' the variadic part always include the entire variadic part,
+        irrespective of the step size.
+
+        The slice is constructed as follows:
+        - if both start and stop are within the prefix or both within the suffix,
+          just do regular slicing
+        - If they traverse the variadic part, create two slices and glue them with the variadic part in between.
+        """
+        proper_items = tup.proper_items()
+        unpack_index = find_unpack_in_list(proper_items)
+
+        if unpack_index is None:
+            return TupleType(proper_items[the_slice], self.tuple_type)
+
+        prefix_length = unpack_index
+        suffix_length = len(proper_items) - unpack_index - 1
+
+        # get the projected start and stop indices
+        start = (
+            0
+            if the_slice.start is None
+            else max(-suffix_length, min(the_slice.start, prefix_length))
+        )
+        stop = (
+            -1
+            if the_slice.stop is None
+            else max(-suffix_length, min(the_slice.stop, prefix_length))
+        )
+        step = the_slice.step
+
+        variadic_part = proper_items[unpack_index]
+        variadic_as_iterable = self.as_iterable_type(variadic_part.type)
+        iterable_type = variadic_as_iterable.args[0]
+
+        if start >= 0 and stop >= 0:
+            items = [
+                proper_items[i] if i < prefix_length else iterable_type
+                for i in range(start, stop, step)
+            ]
+        elif start >= 0 and stop < 0:
+            if step != 1:
+                raise ValueError("step must be 1")
+            items = [
+                *proper_items[start : unpack_index - 1 : step],
+                variadic_part,
+                *proper_items[unpack_index + 1 : stop : step],
+            ]
+        elif start < 0 and stop >= 0 and step < 0:
+            if step != -1:
+                raise ValueError("step must be -1")
+            items = [
+                *proper_items[start : unpack_index + 1 : step],
+                variadic_part,
+                *proper_items[unpack_index - 1 : stop : step],
+            ]
+        elif start < 0 and stop < 0:
+            items = [
+                proper_items[i] if i >= -suffix_length else iterable_type
+                for i in range(start, stop, step)
+            ]
+        else:
+            # empty slice
+            items = []
+        return TupleType(items, self.tuple_type)
+
+    def concatatenate_tuples(self, *args: TupleType) -> TupleType:
+        r"""Concatenate multiple tuple types.
+
+        The result is in Tuple Normal Form.
+        """
 
 
 def infer_function_type_arguments(

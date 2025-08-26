@@ -1731,3 +1731,115 @@ def test(
 ) -> None:
     fn(*(1, *args), **kwargs)
 [builtins fixtures/tuple.pyi]
+
+
+
+[case testStarArgsWithSuffix]
+def f(*args: tuple[*tuple[str, ...], int, int, int]) -> None: pass
+
+def test(x: tuple[str, ...], y: tuple[int, int, int], z: int) -> None:
+    f(*x, z, z, z)
+    f(*(*x, z, z, z))
+    f(*x, *y)
+    f(*(*x, *y))
+[builtins fixtures/tuple.pyi]
+
+
+[case testStarArgsWithPrefixAndSuffix]
+
+class P: ...
+class V: ...
+class S: ...
+
+def f(
+    a1: P, a2: P, /,                      # prefix
+    *args: *tuple[*tuple[V, ...], S, S],  # unbounded + suffix
+) -> None: pass
+
+def test_good_cases1(
+    p: P,
+    v: tuple[V, ...],
+    s: S,
+) -> None:
+    # check all possible bracketing combinations
+    # there are 45 possible ways to parenthesize the arguments
+    # (little Schroeder number, see https://oeis.org/A001003)
+    f(p, p, *v, s, s)
+    f(p, p, *v, *(s, s))
+    f(p, p, *(*v, s), s)
+    f(p, p, *(*v, s, s))
+    f(p, p, *(*v, *(s, s)))
+    f(p, p, *(*(*v, s), s))
+    f(p, *(p, *v), s, s)
+    f(p, *(p, *v), *(s, s))
+    f(p, *(p, *v, s), s)
+    f(p, *(p, *(*v, s)), s)
+    f(p, *(*(p, *v), s), s)
+    f(p, *(p, *v, s, s))
+    f(p, *(p, *v, *(s, s)))
+    f(p, *(p, *(*v, s), s))
+    f(p, *(p, *(*v, s, s)))
+    f(p, *(p, *(*v, *(s, s))))
+    f(p, *(p, *(*(*v, s), s)))
+    f(p, *(*(p, *v), s, s))
+    f(p, *(*(p, *v), *(s, s)))
+    f(p, *(*(p, *v, s), s))
+    f(p, *(*(p, *(*v, s)), s))
+    f(p, *(*(*(p, *v), s), s))
+    f(*(p, p), *v, s, s)
+    f(*(p, p), *v, *(s, s))
+    f(*(p, p), *(*v, s), s)
+    f(*(p, p), *(*v, s, s))
+    f(*(p, p), *(*v, *(s, s)))
+    f(*(p, p), *(*(*v, s), s))
+    f(*(p, p, *v), s, s)
+    f(*(p, *(p, *v)), s, s)
+    f(*(*(p, p), *v), s, s)
+    f(*(p, p, *v), *(s, s))
+    f(*(p, *(p, *v)), *(s, s))
+    f(*(*(p, p), *v), *(s, s))
+    f(*(p, p, *v, s), s)
+    f(*(p, p, *(*v, s)), s)
+    f(*(p, *(p, *v), s), s)
+    f(*(p, *(p, *v, s)), s)
+    f(*(p, *(p, *(*v, s))), s)
+    f(*(p, *(*(p, *v), s)), s)
+    f(*(*(p, p), *v, s), s)
+    f(*(*(p, p), *(*v, s)), s)
+    f(*(*(p, p, *v), s), s)
+    f(*(*(p, *(p, *v)), s), s)
+    f(*(*(*(p, p), *v), s), s)
+[builtins fixtures/tuple.pyi]
+
+
+[case testVarArgsNumber]
+from typing import Unpack
+def takes_exactly_3(a1: str, a2: str, a3: str, /) -> None: ...
+def takes_at_least3(a1: str, a2: str, a3: str, /, *args: str) -> None: ...
+
+def test_takes_at_least3(
+    x0: tuple[Unpack[tuple[str, ...]]],
+    x1: tuple[str, Unpack[tuple[str, ...]]],
+    x2: tuple[str, str, Unpack[tuple[str, ...]]],
+    x3: tuple[str, str, str, Unpack[tuple[str, ...]]],
+    x4: tuple[str, str, str, str, Unpack[tuple[str, ...]]],
+) -> None:
+    takes_at_least3(*x0)
+    takes_at_least3(*x1)
+    takes_at_least3(*x2)
+    takes_at_least3(*x3)
+    takes_at_least3(*x4)
+
+def test_takes_exactly_3(
+    x0: tuple[Unpack[tuple[str, ...]]],
+    x1: tuple[str, Unpack[tuple[str, ...]]],
+    x2: tuple[str, str, Unpack[tuple[str, ...]]],
+    x3: tuple[str, str, str, Unpack[tuple[str, ...]]],
+    x4: tuple[str, str, str, str, Unpack[tuple[str, ...]]],
+) -> None:
+    takes_exactly_3(*x0)
+    takes_exactly_3(*x1)
+    takes_exactly_3(*x2)
+    takes_exactly_3(*x3)
+    takes_exactly_3(*x4)  # E: Too many arguments for "takes_exactly_3"
+[builtins fixtures/tuple.pyi]

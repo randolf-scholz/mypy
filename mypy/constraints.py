@@ -12,6 +12,7 @@ from mypy.argmap import ArgTypeExpander
 from mypy.erasetype import erase_typevars
 from mypy.maptype import map_instance_to_supertype
 from mypy.nodes import (
+    ARG_NAMED,
     ARG_OPT,
     ARG_POS,
     ARG_STAR,
@@ -64,7 +65,7 @@ from mypy.types_utils import is_union_with_any
 from mypy.typestate import type_state
 
 if TYPE_CHECKING:
-    from mypy.infer import ArgumentInferContext, TupleInstanceType
+    from mypy.infer import ArgumentInferContext
 
 SUBTYPE_OF: Final = 0
 SUPERTYPE_OF: Final = 1
@@ -148,6 +149,7 @@ def infer_constraints_for_callable(
             actual_arg_kinds: list[ArgKind] = []
             actual_arg_names: list[str | None] = []
             expanded_actuals: list[Type] = []
+
             for actual in actuals:
                 actual_arg_type = arg_types[actual]
 
@@ -159,10 +161,11 @@ def infer_constraints_for_callable(
                 expanded_actual = mapper.expand_actual_type(
                     actual_arg_type, actual_arg_kind, formal_name, formal_kind
                 )
-                expanded_actuals.append(expanded_actual)
+
                 actual_arg_types.append(actual_arg_type)
                 actual_arg_kinds.append(actual_arg_kind)
                 actual_arg_names.append(actual_arg_name)
+                expanded_actuals.append(expanded_actual)
 
             # 2. depending on the formal kind, we can infer constraints.
             if formal_kind not in (ARG_STAR, ARG_STAR2):
@@ -172,83 +175,114 @@ def infer_constraints_for_callable(
                     c = infer_constraints(formal_type, expanded_actual, SUPERTYPE_OF)
                     constraints.extend(c)
             elif param_spec and not incomplete_star_mapping:
+                assert formal_kind in (ARG_STAR, ARG_STAR2)
                 assert isinstance(formal_type, ParamSpecType)
                 # If actual arguments are mapped to ParamSpec type, we can't infer individual
                 # constraints, instead store them and infer single constraint at the end.
                 # It is impossible to map actual kind to formal kind, so use some heuristic.
                 # This inference is used as a fallback, so relying on heuristic should be OK.
-                for actual_kind, actual_name, expanded_actual in zip(
-                    actual_arg_kinds, actual_arg_names, expanded_actuals
+                for actual_kind, actual_name, expanded_actual, original_actual in zip(
+                    actual_arg_kinds, actual_arg_names, expanded_actuals, actual_arg_types
                 ):
-                    param_spec_arg_types.append(expanded_actual)
-                    param_spec_arg_kinds.append(
-                        ARG_POS if actual_kind not in (ARG_STAR, ARG_STAR2) else actual_kind
-                    )
-                    param_spec_arg_names.append(actual_name)
+                    if actual_kind in (ARG_POS, ARG_NAMED):
+                        # do not use the expanded form for positional arguments
+                        param_spec_arg_types.append(original_actual)
+                        param_spec_arg_kinds.append(ARG_POS)
+                        param_spec_arg_names.append(actual_name)
+                    elif actual_kind in (ARG_STAR, ARG_STAR2):
+                        param_spec_arg_types.append(expanded_actual)
+                        param_spec_arg_kinds.append(actual_kind)
+                        param_spec_arg_names.append(actual_name)
+                    else:
+                        # ARG_OPT/ARG_NAMED_OPT is not possible for actuals
+                        assert_never(actual_kind)
+
             elif formal_kind == ARG_STAR:
+                # combine all the actuals into a single tuple type
+                items = []
+                for e, kind in zip(expanded_actuals, actual_arg_kinds):
+                    if kind == ARG_STAR:
+                        assert isinstance(e, TupleType)
+                        items.extend(e.items)
+                    elif kind == ARG_POS:
+                        items.append(e)
+                    else:
+                        assert_never(kind)
+
+                # concatenate all these tuples
+                actual_tuple = context.make_tuple_type(items)
+                # actual_tuple = context.concatenate_tuples(expanded_actuals)
+
                 # There are 3 possible cases for formal_type:
                 #    1. ParamSpecType, which happens for annotation ``*args: P.args``
                 #    2. An UnpackType, which happens for annotation ``*args: *Ts``, ``*args: *tuple[T, ...]`` or ``*args: *tuple[int, int]``
                 #    3. Any other type, which happens for annotation ``*args: T``.
                 #       These are functionally equivalent to ``*args: *tuple[T, ...]``
-                parsed_formal_type: ParamSpecType | TupleType | TupleInstanceType
-                if isinstance(formal_type, ParamSpecType):
-                    parsed_formal_type = formal_type
-                elif isinstance(formal_type, UnpackType):
-                    unpacked = get_proper_type(formal_type.type)
-                    if isinstance(unpacked, TypeVarTupleType):
-                        # treat ``*Ts`` as ``tuple[*Ts]``
-                        parsed_formal_type = TupleType([formal_type], fallback=context.tuple_type)
-                    elif isinstance(unpacked, TupleType):
-                        # treat ``*tuple[A, B, C]`` as ``tuple[A, B, C]``
-                        parsed_formal_type = formal_type.type
-                    elif context.is_tuple_instance_type(unpacked):
-                        # treat ``*tuple[T, ...]`` as ``tuple[T, ...]``
-                        parsed_formal_type = formal_type.type
-                    else:
-                        raise TypeError(f"Unexpected unpacked type: {unpacked}")
-                else:
-                    # treat ``*args: T`` as ``*args: *tuple[T, ...]``
-                    parsed_formal_type = context.make_tuple_instance_type(formal_type)
 
-                # 2. construct the actual tuple type from all the arguments mapped to *args.
-                actual_items = []
-                for actual_kind, expanded_actual in zip(actual_arg_kinds, expanded_actuals):
-                    if actual_kind == ARG_POS:
-                        # If we have a positional argument, we can just append it.
-                        actual_items.append(expanded_actual)
-                    elif actual_kind == ARG_STAR:
-                        # when both actual_kind and formal_kind are ARG_STAR,
-                        # the mapper should return one of TupleType | TupleInstanceType | ParamSpecType
-                        arg = get_proper_type(expanded_actual)
-                        if isinstance(arg, TupleType):
-                            actual_items.extend(arg.items)
-                        elif isinstance(arg, ParamSpecType):
-                            actual_items.append(arg)
-                        elif context.is_tuple_instance_type(arg):
-                            actual_items.append(UnpackType(arg))
-                        else:
-                            actual_items.append(expanded_actual)
-                    else:
-                        assert False, f"Unexpected argument kind for *args: {actual_kind}"
-                # 2b. flatten the tuple items, we don't want to produce something like tuple[Unpack[tuple[A | B]]]
-                actual_items = flatten_nested_tuples(actual_items)
-                if actual_items:  # TODO: using match-case would be much nicer (Python 3.10+)
-                    first_type = get_proper_type(actual_items[0])
-                    actual_tuple_type: Type
-                    # if len(actual_items) == 1 and isinstance(first_type, UnpackType):
-                    #     # case: [*tuple[int, ...]], just use tuple[int, ...]
-                    #     actual_tuple_type = first_type.type
-                    if len(actual_items) == 1 and isinstance(first_type, ParamSpecType):
-                        # case [P.Args], just use P.Args
-                        actual_tuple_type = first_type
-                    else:
-                        # In all other cases, we create a TupleType from the items.
-                        fallback = context.make_tuple_instance_type(AnyType)
-                        actual_tuple_type = TupleType(actual_items, fallback=fallback)
+                # parse the formal type into a tuple
+                formal_tuple = mapper.parse_star_parameter(formal_type)
 
-                    c = infer_constraints(parsed_formal_type, actual_tuple_type, SUPERTYPE_OF)
-                    constraints.extend(c)
+                c = infer_constraints(formal_tuple, actual_tuple, SUPERTYPE_OF)
+                constraints.extend(c)
+
+                # parsed_formal_type: ParamSpecType | TupleType | TupleInstanceType
+                # if isinstance(formal_type, ParamSpecType):
+                #     parsed_formal_type = formal_type
+                # elif isinstance(formal_type, UnpackType):
+                #     unpacked = get_proper_type(formal_type.type)
+                #     if isinstance(unpacked, TypeVarTupleType):
+                #         # treat ``*Ts`` as ``tuple[*Ts]``
+                #         parsed_formal_type = TupleType([formal_type], fallback=context.tuple_type)
+                #     elif isinstance(unpacked, TupleType):
+                #         # treat ``*tuple[A, B, C]`` as ``tuple[A, B, C]``
+                #         parsed_formal_type = formal_type.type
+                #     elif context.is_tuple_instance_type(unpacked):
+                #         # treat ``*tuple[T, ...]`` as ``tuple[T, ...]``
+                #         parsed_formal_type = formal_type.type
+                #     else:
+                #         raise TypeError(f"Unexpected unpacked type: {unpacked}")
+                # else:
+                #     # treat ``*args: T`` as ``*args: *tuple[T, ...]``
+                #     parsed_formal_type = context.make_tuple_instance_type(formal_type)
+                #
+                # # 2. construct the actual tuple type from all the arguments mapped to *args.
+                # actual_items = []
+                # for actual_kind, expanded_actual in zip(actual_arg_kinds, expanded_actuals):
+                #     if actual_kind == ARG_POS:
+                #         # If we have a positional argument, we can just append it.
+                #         actual_items.append(expanded_actual)
+                #     elif actual_kind == ARG_STAR:
+                #         # when both actual_kind and formal_kind are ARG_STAR,
+                #         # the mapper should return one of TupleType | TupleInstanceType | ParamSpecType
+                #         arg = get_proper_type(expanded_actual)
+                #         if isinstance(arg, TupleType):
+                #             actual_items.extend(arg.items)
+                #         elif isinstance(arg, ParamSpecType):
+                #             actual_items.append(arg)
+                #         elif context.is_tuple_instance_type(arg):
+                #             actual_items.append(UnpackType(arg))
+                #         else:
+                #             actual_items.append(expanded_actual)
+                #     else:
+                #         assert False, f"Unexpected argument kind for *args: {actual_kind}"
+                # # 2b. flatten the tuple items, we don't want to produce something like tuple[Unpack[tuple[A | B]]]
+                # actual_items = flatten_nested_tuples(actual_items)
+                # if actual_items:  # TODO: using match-case would be much nicer (Python 3.10+)
+                #     first_type = get_proper_type(actual_items[0])
+                #     actual_tuple_type: Type
+                #     # if len(actual_items) == 1 and isinstance(first_type, UnpackType):
+                #     #     # case: [*tuple[int, ...]], just use tuple[int, ...]
+                #     #     actual_tuple_type = first_type.type
+                #     if len(actual_items) == 1 and isinstance(first_type, ParamSpecType):
+                #         # case [P.Args], just use P.Args
+                #         actual_tuple_type = first_type
+                #     else:
+                #         # In all other cases, we create a TupleType from the items.
+                #         fallback = context.make_tuple_instance_type(AnyType)
+                #         actual_tuple_type = TupleType(actual_items, fallback=fallback)
+                #
+                #     c = infer_constraints(parsed_formal_type, actual_tuple_type, SUPERTYPE_OF)
+                #     constraints.extend(c)
             elif formal_kind == ARG_STAR2:
                 assert not isinstance(formal_type, UnpackType), "not handled here?!"
 

@@ -2898,6 +2898,7 @@ class TupleType(ProperType):
         return TupleType(slice_items, fallback, self.line, self.column, self.implicit)
 
     # TODO: should this be cached?
+    @property
     def proper_items(self) -> list[ProperType]:
         """Return a list of proper types for the items in this tuple (flattened)."""
         res = []
@@ -2914,14 +2915,14 @@ class TupleType(ProperType):
     @property
     def prefix(self) -> list[ProperType]:
         """The prefix of the tuple before the first Unpack, or the entire tuple."""
-        proper_items = self.proper_items()
+        proper_items = self.proper_items
         unpack_index = find_unpack_in_list(proper_items)
         return proper_items[:unpack_index]
 
     @property
     def suffix(self) -> list[ProperType]:
         """The suffix of the tuple after the last Unpack, or the entire tuple."""
-        proper_items = self.proper_items()
+        proper_items = self.proper_items
         unpack_index = find_unpack_in_list(proper_items)
         if unpack_index is None:
             return []
@@ -2930,9 +2931,14 @@ class TupleType(ProperType):
     @property
     def is_variadic(self) -> bool:
         """The variadic item if the tuple has one Unpack, otherwise None."""
-        proper_items = self.proper_items()
+        proper_items = self.proper_items
         unpack_index = find_unpack_in_list(proper_items)
         return unpack_index is not None
+
+    @property
+    def minimum_length(self) -> int:
+        """The minimum length of the tuple."""
+        return len(self.proper_items) - self.is_variadic
 
 
 class TypedDictType(ProperType):
@@ -3424,6 +3430,7 @@ class UnionType(ProperType):
     def read(cls, data: Buffer) -> UnionType:
         return UnionType(read_type_list(data), uses_pep604_syntax=read_bool(data))
 
+    @property
     def proper_items(self) -> list[ProperType]:
         """Return a list of proper types for the items in this union (flattened)."""
         # similar to flatten_nested_unions, but expands type aliases
@@ -3431,7 +3438,7 @@ class UnionType(ProperType):
         for typ in self.items:
             p_t = get_proper_type(typ)
             if isinstance(p_t, UnionType):
-                res.extend(p_t.proper_items())
+                res.extend(p_t.proper_items)
             else:
                 res.append(p_t)
         return res

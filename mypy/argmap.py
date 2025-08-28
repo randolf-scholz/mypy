@@ -18,7 +18,6 @@ from mypy.types import (
     TypedDictType,
     TypeOfAny,
     UnpackType,
-    find_unpack_in_list,
     get_proper_type,
 )
 
@@ -192,7 +191,8 @@ class ArgTypeExpander:
                 return original_actual
             elif formal_kind == ARG_STAR:
                 # wrap in a tuple
-                return TupleType([original_actual], fallback=self.context.tuple_type)
+                return original_actual
+                # return TupleType([original_actual], fallback=self.context.tuple_type)
             else:
                 assert False, f"unexpected formal kind {formal_kind} for positional actual"
 
@@ -220,7 +220,7 @@ class ArgTypeExpander:
 
                 # if the argument is exhausted, reset the index
                 if not star_args_type.is_variadic and self.tuple_index >= len(
-                    star_args_type.proper_items()
+                    star_args_type.proper_items
                 ):
                     self.tuple_index = 0
                 return value
@@ -273,38 +273,6 @@ class ArgTypeExpander:
         else:
             assert False, f"unexpected actual kind {actual_kind}"
 
-    def _get_tuple_item(self, tt: TupleType, index: int) -> Type:
-        r"""Get the predicted type of indexing the tuple.
-
-        Assuming the tuple type is in Tuple Normal Form, then the result is:
-
-        tuple[P1, ..., Pn, *Vs, S1, ..., Sm] @ index =
-            Iterable_type[Vs]  if index < -m
-            S[index]           if -m ≤ index < 0
-            P[index]           if 0 ≤ index < n
-            Iterable_type[Vs]  if index ≥ n
-
-        If the tuple has no variadic part, the it works just like regular indexing
-        on the proper items
-        """
-        proper_items = tt.proper_items()
-        unpack_index = find_unpack_in_list(proper_items)
-
-        if unpack_index is None:
-            return proper_items[index]
-
-        n = unpack_index - 1
-        m = len(proper_items) - unpack_index
-
-        if -m <= index < n:
-            return proper_items[index]
-
-        item = proper_items[unpack_index]
-        assert isinstance(item, UnpackType)
-        unpacked = get_proper_type(item.type)
-
-        # convert to Iterable[T] and return T
-
     def parse_star_argument(self, star_arg: Type, /) -> FlatTuple | ParamSpecType | AnyType:
         r"""Parse the type of ``*args`` argument into a tuple type.
 
@@ -319,7 +287,7 @@ class ArgTypeExpander:
         return tnf.materialize(self.context)
 
     def parse_star_parameter(self, star_param: Type, /) -> FlatTuple | ParamSpecType | AnyType:
-        r"""Parse te type of a ``*args: T`` annotation into a tuple type.
+        r"""Parse the type of a ``*args: T`` annotation into a tuple type.
 
         Note: For star arguments, use `parse_star_argument` instead.
 
@@ -347,6 +315,62 @@ class ArgTypeExpander:
         else:  # e.g. *args: int  --> *args: *tuple[int, ...]
             parsed = UnpackType(self.context.make_tuple_instance_type(p_t))
             return TupleType([parsed], fallback=self.context.tuple_type)
+
+    def expand_all_actuals_and_formal_star_arg(self, actual_types, actual_kinds, formal_type):
+        r"""
+        option 1 iterate over the formal_to_actual
+        option 2 iterate over the actuals, and keep track of which formal we are at.
+        option 3 iterate over the formals, and keep track of which actual we are at.
+        in any case we also need like 1 tuple index per actual, although it only
+        really matters for the critical argument.
+        may it is better to rewrite the errors:
+        argument X to fn has incompatible type, got X but expected Y (POS to POS
+        argument X to fn has incompatible type, got *(....) but expected Y (STAR to POS)
+        argument X to fn has incompatible type, got X but expected *(...) (POS to STAR)
+        argument X to fn has incompatible type, got *(...) but expected *(...) (STAR to STAR)
+
+        IMPORTANT: on the callee side, at most ARG_STAR can be variadic (but it doesn't have to)
+        in this case, we know all variadic positional arguments must be mapped to this single ARG_STAR
+        the leading callers STAR_ARG can also be mapped to a number of preceding positionals arguments.
+
+        case: the formal definition is bounded and the actual definition is bonded:
+        represent the formal in TNF as tuple[T1, ..., Tk]
+        represent the actual in TNF as tuple[P1, ..., Pn]
+        if n > k, raise a too many arguments error
+        if n < k, raise a too few arguments error
+        compare the first min(n, k) items one by one.
+
+        case: the formal definition is bounded, but the actual arguments are unbounded.
+        represent formal in TNF as tuple[T1, ..., Tk]
+        represent actual in TNF as tuple[P1, ..., Pn, *Vs, Q1, ..., Qm]
+        Then in n+m > k, raise a too many arguments error.
+        otherwise, compare the first n-many items to the prefix (actually, min(n,k)-many)
+                 , the last m-many items to the suffix (actually min(m, k-min(n,k))-many)
+                 , and all other items to the unpacked *Vs.
+
+        case: the formal definition is unbounded, but the actual definition is bounded:
+        represent formal in TNF as tuple[P1, ..., Pn, *Vs, S1, ..., Sm]
+        represent actual in TNF as tuple[T1, ..., Tk]
+        Then in k < n+m, raise a too few arguments error.
+        otherwise, compare the first n-many items to the prefix
+                 , the last m-many items to the suffix
+                 , and all other items to the unpacked *Vs.
+
+        case: both the formal definition and the actual definition are unbounded:
+        represent formal in TNF as tuple[P1, ..., Pn, *Vs, S1, ..., Sm]
+        represent actual in TNF as tuple[T1, ..., Tk, *Us, Q1, ..., Ql]
+        Then:
+        - compare the first min(n, k) many items one by one.
+        - compare the last min(m, l) many items one by one.
+
+        For the remaining items, there are 4 cases:
+        formal                                     actual
+        tuple[P1, ..., Pn, *Vs, S1, ..., Sm]  and  tuple[*Us]
+        tuple[*Vs, S1, ..., Sm]               and  tuple[T1, ..., Tn, *Us]
+        tuple[P1, ..., Pn, *Vs]               and  tuple[*Us, Q1, ..., Qm]
+        tuple[*Vs]                            and  tuple[T1, ..., Tn, *Us, Q1, ..., Qm]
+        check these according to the rules above.
+        """
 
 
 def parse_positional_arg(self, typ: Type, kind: ARG_POS | ARG_STAR) -> TupleType:

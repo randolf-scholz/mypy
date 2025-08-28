@@ -1703,6 +1703,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
         See the docstring of check_call for more information.
         """
         # Always unpack **kwargs before checking a call.
+        pass
         callee = callee.with_unpacked_kwargs().with_normalized_var_args()
         if callable_name is None and callee.name:
             callable_name = callee.name
@@ -1753,7 +1754,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                     continue
                 arg_type = get_proper_type(self.accept(arg))
                 if isinstance(arg_type, TupleType):
-                    seen_unpack += sum(isinstance(t, UnpackType) for t in arg_type.proper_items())
+                    seen_unpack += sum(isinstance(t, UnpackType) for t in arg_type.proper_items)
                 else:
                     seen_unpack += 1
 
@@ -2510,6 +2511,8 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                         ok = False
                         self.msg.too_many_arguments(callee, context)
 
+                    # TODO: cover the case when ARG_STAR exists but is not variadic.
+
                 elif kind == ARG_STAR2:
                     kwargs_type = get_proper_type(actual_types[i])
                     if isinstance(kwargs_type, TypedDictType) and (
@@ -2580,8 +2583,8 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
         _validate_arg_kinds(arg_kinds)
 
         formal_to_actual = _use_only_first_valid_arg(formal_to_actual, callee.arg_kinds)
-
         _validate_formal_to_actual(formal_to_actual, arg_kinds, callee.arg_kinds)
+
         for i, actuals in enumerate(formal_to_actual):
             formal_kind = callee.arg_kinds[i]
             formal_type = callee.arg_types[i]
@@ -2619,76 +2622,225 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                 actual_types = [arg_types[a] for a in actuals]
                 actual_kinds = [arg_kinds[a] for a in actuals]
 
-                # expand all actuals to tuples
-                expanded_actuals = [
-                    mapper.expand_actual_type(typ, kind, None, formal_kind)
-                    for typ, kind in zip(actual_types, actual_kinds)
-                ]
-                assert all(isinstance(e, TupleType) for e in expanded_actuals)
-
-                # concatenate all these tuples
-                expanded_tuple = TupleType(
-                    flatten_nested_tuples([UnpackType(e) for e in expanded_actuals]),
-                    mapper.context.tuple_type,
-                )
-                # parse the formal type as a tuple
+                # parse the formal type as a tuple in TNF
                 formal_tuple = mapper.parse_star_parameter(formal_type)
+                formal_unpack_index = find_unpack_in_list(formal_tuple.proper_items)
+                assert formal_unpack_index is not None, "This was dealt with during normalization"
+                total_items = len(formal_tuple.proper_items)
+                formal_prefix_length = len(formal_tuple.prefix)
+                formal_suffix_length = len(formal_tuple.suffix)
 
-                show(
-                    f"\n\n\t{formal_type}"
-                    f"\n\t{formal_tuple}"
-                    f"\n\t{actual_types}"
-                    f"\n\t{actual_kinds}"
-                    f"\n\t{expanded_tuple}"
-                )
+                # we check the given args one by one.
+                # for positional arguments, we index into the formal tuple type
+                # for star arguments, we compare to a slice of the formal tuple type.
+                # what will be a biot tricky is matching the suffix.
+                # This will need to be accounted for if any of the actuals is variadic.
 
-                # compare the results
-                check_arg(
-                    expanded_tuple,
-                    actual_types[0],
-                    ARG_STAR,
-                    formal_tuple,
-                    actuals[0] + 1,
-                    i + 1,
-                    callee,
-                    object_type,
-                    args[actuals[0]],
-                    context,
-                )
+                # The algorithm is similar to how we dealt with computing the TNF from a list
+                # of items to begin with.
+                # We will start with matching the prefix.
+                # once we hit the first variadic actual ARG_STAR, we break
+                # then, we queue all items until we hit the last variadic actual ARG_STAR.
+                # finally, we check the args for the grouped items.
 
-            elif formal_kind in (ARG_NAMED, ARG_NAMED_OPT):
-                assert len(actuals) == 1, "Multiple named args mapped to single named parameter"
-                actual = actuals[0]
-                actual_type = arg_types[actual]
-                actual_kind = arg_kinds[actual]
-                expanded_actual = mapper.expand_actual_type(
-                    actual_type, actual_kind, None, formal_kind
-                )
-                check_arg(
-                    expanded_actual,
-                    actual_type,
-                    actual_kind,
-                    formal_type,
-                    actual + 1,
-                    i + 1,
-                    callee,
-                    object_type,
-                    args[actual],
-                    context,
-                )
+                prefix_actuals: list[tuple[int, ArgKind, Type, Type]] = []
+                middle_actuals: list[tuple[int, ArgKind, Type, Type]] = []
+                suffix_actuals: list[tuple[int, ArgKind, Type, Type]] = []
+                prefix_expected: list[Type] = []
+                middle_expected: list[Type] = []
+                suffix_expected: list[Type] = []
 
-            elif formal_kind == ARG_STAR2:
-                for actual in actuals:
-                    actual_type = arg_types[actual]
-                    actual_kind = arg_kinds[actual]
+                expanded_actuals: list[Type] = []
+                expected_types: list[Type] = []
+                seen_variadic = False
+
+                # next, we need to match the actuals against the formal tuple type.
+                # This is done by first exhausting the formal prefix one by one from the start,
+                # then the formal suffix one by one from the end,
+                # and finally matching the remaining actuals against the variadic middle part.
+
+                # example:
+                # formal: *tuple[str, str, *tuple[int, ...], str, str]
+                # actual: *tuple[str, str, str, str]
+                # In this case, we match the actual against the first two and last two items of the formal tuple.
+                # that is, for a finite tuple arg, and formal tuple F,
+                # we match against
+                #   [F[i] while prefix_items, *F.variadic_item, F[-i] while suffix_items]
+
+                # group the actuals by which part of the formal tuple they will match against
+                # essentially the same algorithm as in TNF._from_items
+                for actual, actual_kind, actual_type in zip(actuals, actual_kinds, actual_types):
                     expanded_actual = mapper.expand_actual_type(
                         actual_type, actual_kind, None, formal_kind
                     )
+                    expanded_actuals.append(expanded_actual)
+                    item = (actual, actual_kind, actual_type, expanded_actual)
+
+                    if actual_kind == ARG_STAR and is_variadic_tuple(expanded_actual):
+                        seen_variadic = True
+                        middle_actuals.extend(suffix_actuals)
+                        middle_actuals.append(item)
+                        suffix_actuals.clear()
+                    elif seen_variadic:
+                        suffix_actuals.append(item)
+                    else:
+                        prefix_actuals.append(item)
+
+                if not seen_variadic:
+                    formal_prefix_index = 0
+                    formal_suffix_index = 0
+                    formal_unpack_index = find_unpack_in_list(formal_tuple.proper_items)
+                    # matching formal [P1, P2, ..., Pn, *Us, S1, S2, ..., Sm]
+                    # against  actual [T1, ..., Tk] without variadic part
+                    for actual, actual_kind, actual_type, expanded_actual in prefix_actuals:
+                        if actual_kind == ARG_POS:
+                            if formal_prefix_index < formal_prefix_length:
+                                expected_type = mapper.context.get_tuple_item(
+                                    formal_tuple, formal_prefix_index
+                                )
+                                formal_prefix_index += 1
+                            elif formal_suffix_index < formal_suffix_length:
+                                # prefix is exhausted, take from the suffix
+                                expected_type = mapper.context.get_tuple_item(
+                                    formal_tuple, -formal_suffix_index - 1
+                                )
+                                formal_suffix_index -= 1
+                            else:
+                                # both formal prefix and suffix are exhausted, take from the unpacked part
+                                expected_type = mapper.context.get_tuple_item(
+                                    formal_tuple, formal_unpack_index
+                                )
+                        elif actual_kind == ARG_STAR:
+                            assert isinstance(expanded_actual, TupleType)
+                            assert not expanded_actual.is_variadic
+                            size = expanded_actual.minimum_length
+                            expected_items = []
+                            while size:
+                                if formal_prefix_index < formal_prefix_length:
+                                    expected_items.append(
+                                        mapper.context.get_tuple_item(
+                                            formal_tuple, formal_prefix_index
+                                        )
+                                    )
+                                    formal_prefix_index += 1
+                                elif formal_suffix_index < formal_suffix_length:
+                                    expected_items.append(
+                                        mapper.context.get_tuple_item(
+                                            formal_tuple, -formal_suffix_index - 1
+                                        )
+                                    )
+                                    formal_suffix_index -= 1
+                                else:
+                                    expected_items.append(
+                                        mapper.context.get_tuple_item(
+                                            formal_tuple, formal_unpack_index
+                                        )
+                                    )
+                                size -= 1
+
+                            expected_type = TupleType(
+                                items=expected_items, fallback=mapper.context.tuple_type
+                            )
+                        else:
+                            assert False, f"Unexpected argument kind in prefix {actual_kind}"
+
+                        prefix_expected.append(expected_type)
+                else:
+                    formal_prefix_index = 0
+                    formal_suffix_index = -1
+                    formal_unpack_index = find_unpack_in_list(formal_tuple.proper_items)
+                    # Now, check the arguments in order as described earlier.
+                    # check prefix items
+                    for actual, actual_kind, actual_type, expanded_actual in prefix_actuals:
+                        if actual_kind == ARG_POS:
+                            expected_type = mapper.context.get_tuple_item(
+                                formal_tuple, formal_prefix_index
+                            )
+                            formal_prefix_index += 1
+                        elif actual_kind == ARG_STAR:
+                            assert isinstance(expanded_actual, TupleType)
+                            assert not expanded_actual.is_variadic
+                            size = expanded_actual.minimum_length
+                            expected_type = mapper.context.get_tuple_slice(
+                                formal_tuple,
+                                slice(formal_prefix_index, formal_prefix_index + size, +1),
+                            )
+                            formal_prefix_index += size
+                        else:
+                            assert False, f"Unexpected argument kind in prefix {actual_kind}"
+
+                        prefix_expected.append(expected_type)
+
+                    # check the suffix items in reverse order
+                    for actual, actual_kind, actual_type, expanded_actual in reversed(
+                        suffix_actuals
+                    ):
+                        if actual_kind == ARG_POS:
+                            expected_type = mapper.context.get_tuple_item(
+                                formal_tuple, formal_suffix_index
+                            )
+                            formal_suffix_index -= 1
+                        elif actual_kind == ARG_STAR:
+                            assert isinstance(expanded_actual, TupleType)
+                            assert not expanded_actual.is_variadic
+                            size = expanded_actual.minimum_length
+                            expected_type = mapper.context.get_tuple_slice(
+                                formal_tuple,
+                                slice(formal_suffix_index, formal_suffix_index - size, -1),
+                            )
+                            expected_type = expected_type.copy_modified(
+                                items=list(reversed(expected_type.items))
+                            )
+                            formal_suffix_index -= size
+                        else:
+                            assert False, f"Unexpected argument kind in suffix {actual_kind}"
+
+                        suffix_expected.append(expected_type)
+
+                    # finally, test the variadic middle items.
+                    for actual, actual_kind, actual_type, expanded_actual in middle_actuals:
+                        if actual_kind == ARG_POS:
+                            # any ARG_POS we see here was sandwiched between two ARG_STAR
+                            # so it only ever can map to the unpacked part of the formal tuple
+                            expected_type = mapper.context.get_tuple_item(
+                                formal_tuple, formal_unpack_index
+                            )
+                            # we do not increment the index here, since we are still in the variadic part
+                        elif actual_kind == ARG_STAR:
+                            assert isinstance(expanded_actual, TupleType)
+                            prefix_size = len(expanded_actual.prefix)
+                            suffix_size = len(expanded_actual.suffix)
+                            expected_type = mapper.context.get_tuple_slice(
+                                formal_tuple, slice(formal_prefix_index, formal_suffix_index, 1)
+                            )
+                            formal_prefix_index += prefix_size
+                            formal_suffix_index -= suffix_size
+                            # we do not increment the index here, since we are still in the variadic part
+                        else:
+                            assert False, f"Unexpected argument kind in middle {actual_kind}"
+
+                        middle_expected.append(expected_type)
+
+                # collect all the expected types in order
+                expected_types = [*prefix_expected, *middle_expected, *reversed(suffix_expected)]
+
+                show(
+                    f"\n\t{actuals=}"
+                    f"\n\t{actual_types=}"
+                    f"\n\t{actual_kinds=}"
+                    f"\n\t{expanded_actuals=}"
+                    f"\n\texpected_types={'\n\t\t'.join(str(t) for t in expected_types)}"
+                )
+
+                # finally check the types in order
+                for actual, actual_type, actual_kind, expanded_actual, expected_type in zip(
+                    actuals, actual_types, actual_kinds, expanded_actuals, expected_types
+                ):
                     check_arg(
                         expanded_actual,
                         actual_type,
                         actual_kind,
-                        formal_type,
+                        expected_type,
                         actual + 1,
                         i + 1,
                         callee,
@@ -2696,61 +2848,6 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                         args[actual],
                         context,
                     )
-            else:
-                assert_never(formal_kind)
-
-        # option 1 iterate over the formal_to_actual
-        # option 2 iterate over the actuals, and keep track of which formal we are at.
-        # option 3 iterate over the formals, and keep track of which actual we are at.
-        # in any case we also need like 1 tuple index per actual, although it only
-        # really matters for the critical argument.
-        # may it is better to rewrite the errors:
-        # argument X to fn has incompatible type, got X but expected Y (POS to POS
-        # argument X to fn has incompatible type, got *(....) but expected Y (STAR to POS)
-        # argument X to fn has incompatible type, got X but expected *(...) (POS to STAR)
-        # argument X to fn has incompatible type, got *(...) but expected *(...) (STAR to STAR)
-
-        # IMPORTANT: on the callee side, at most ARG_STAR can be variadic (but it doesn't have to)
-        # in this case, we know all variadic positional arguments must be mapped to this single ARG_STAR
-        # the leading callers STAR_ARG can also be mapped to a number of preceding positionals arguments.
-
-        # case: the formal definition is bounded and the actual definition is bonded:
-        # represent the formal in TNF as tuple[T1, ..., Tk]
-        # represent the actual in TNF as tuple[P1, ..., Pn]
-        # if n > k, raise a too many arguments error
-        # if n < k, raise a too few arguments error
-        # compare the first min(n, k) items one by one.
-
-        # case: the formal definition is bounded, but the actual arguments are unbounded.
-        # represent formal in TNF as tuple[T1, ..., Tk]
-        # represent actual in TNF as tuple[P1, ..., Pn, *Vs, Q1, ..., Qm]
-        # Then in n+m > k, raise a too many arguments error.
-        # otherwise, compare the first n-many items to the prefix (actually, min(n,k)-many)
-        #          , the last m-many items to the suffix (actually min(m, k-min(n,k))-many)
-        #          , and all other items to the unpacked *Vs.
-
-        # case: the formal definition is unbounded, but the actual definition is bounded:
-        # represent formal in TNF as tuple[P1, ..., Pn, *Vs, S1, ..., Sm]
-        # represent actual in TNF as tuple[T1, ..., Tk]
-        # Then in k < n+m, raise a too few arguments error.
-        # otherwise, compare the first n-many items to the prefix
-        #          , the last m-many items to the suffix
-        #          , and all other items to the unpacked *Vs.
-
-        # case: both the formal definition and the actual definition are unbounded:
-        # represent formal in TNF as tuple[P1, ..., Pn, *Vs, S1, ..., Sm]
-        # represent actual in TNF as tuple[T1, ..., Tk, *Us, Q1, ..., Ql]
-        # Then:
-        # - compare the first min(n, k) many items one by one.
-        # - compare the last min(m, l) many items one by one.
-
-        # For the remaining items, there are 4 cases:
-        # formal                                     actual
-        # tuple[P1, ..., Pn, *Vs, S1, ..., Sm]  and  tuple[*Us]
-        # tuple[*Vs, S1, ..., Sm]               and  tuple[T1, ..., Tn, *Us]
-        # tuple[P1, ..., Pn, *Vs]               and  tuple[*Us, Q1, ..., Qm]
-        # tuple[*Vs]                            and  tuple[T1, ..., Tn, *Us, Q1, ..., Qm]
-        # check these according to the rules above.
 
         # the tricky part is actually emitting the errors in a way that makes sense to the user.
         # by keeping track of the original argument index.
@@ -2970,13 +3067,13 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
         original_caller_type = get_proper_type(original_caller_type)
         callee_type = get_proper_type(callee_type)
 
-        show(
-            f"Checking argument"
-            f"\n\t{caller_type=}"
-            f"\n\t{original_caller_type=}"
-            f"\n\t{caller_kind=}"
-            f"\n\t{callee_type=}"
-        )
+        # show(
+        #     f"Checking argument"
+        #     f"\n\t{caller_type=}"
+        #     f"\n\t{original_caller_type=}"
+        #     f"\n\t{caller_kind=}"
+        #     f"\n\t{callee_type=}"
+        # )
 
         # print(caller_type, callee_type)
 
@@ -7220,7 +7317,7 @@ def _find_first_named_arg(kinds: list[ArgKind]) -> int:
 
 def _find_first_unbounded_tuple(tuples: list[TupleType]) -> int | None:
     for i, t in enumerate(tuples):
-        if any(isinstance(t, UnpackType) in t.proper_items()):
+        if any(isinstance(t, UnpackType) in t.proper_items):
             return i
     return None
 
@@ -7228,3 +7325,8 @@ def _find_first_unbounded_tuple(tuples: list[TupleType]) -> int | None:
 def show(*args: object) -> None:
     if False:
         print(*args)
+
+
+def is_variadic_tuple(typ: Type) -> bool:
+    p_t = get_proper_type(typ)
+    return isinstance(p_t, TupleType) and p_t.is_variadic

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from typing import NamedTuple, NewType, cast
 from typing_extensions import TypeIs
 
@@ -14,6 +14,7 @@ from mypy.constraints import (
 )
 from mypy.nodes import ARG_POS, ArgKind
 from mypy.solve import solve_constraints
+from mypy.tuple_normal_form import TupleNormalForm
 from mypy.typeops import make_simplified_union
 from mypy.types import (
     AnyType,
@@ -183,7 +184,7 @@ class ArgumentInferContext(NamedTuple):
         If the tuple has no variadic part, then it works just like regular indexing,
         but returns None if the index is out of bounds.
         """
-        proper_items = tup.proper_items()
+        proper_items = tup.proper_items
         unpack_index = find_unpack_in_list(proper_items)
 
         if unpack_index is None:
@@ -192,10 +193,8 @@ class ArgumentInferContext(NamedTuple):
             except IndexError:
                 return None
 
-        n = unpack_index - 1
-        m = len(proper_items) - unpack_index
-
-        if -m <= index < n:
+        N = len(proper_items)
+        if unpack_index - N < index < unpack_index:
             return proper_items[index]
 
         item = proper_items[unpack_index]
@@ -227,7 +226,7 @@ class ArgumentInferContext(NamedTuple):
           just do regular slicing
         - If they traverse the variadic part, create two slices and glue them with the variadic part in between.
         """
-        proper_items = tup.proper_items()
+        proper_items = tup.proper_items
         unpack_index = find_unpack_in_list(proper_items)
 
         if unpack_index is None:
@@ -252,6 +251,7 @@ class ArgumentInferContext(NamedTuple):
         variadic_part = proper_items[unpack_index]
         variadic_as_iterable = self.as_iterable_type(variadic_part.type)
         iterable_type = variadic_as_iterable.args[0]
+        N = len(proper_items)
 
         if start >= 0 and stop >= 0:
             items = [
@@ -262,9 +262,9 @@ class ArgumentInferContext(NamedTuple):
             if step != 1:
                 raise ValueError("step must be 1")
             items = [
-                *proper_items[start : unpack_index - 1 : step],
+                *proper_items[start:unpack_index:step],
                 variadic_part,
-                *proper_items[unpack_index + 1 : stop : step],
+                *proper_items[unpack_index + 1 : (stop % N) + 1 : step],
             ]
         elif start < 0 and stop >= 0 and step < 0:
             if step != -1:
@@ -284,11 +284,42 @@ class ArgumentInferContext(NamedTuple):
             items = []
         return TupleType(items, self.tuple_type)
 
-    def concatatenate_tuples(self, *args: TupleType) -> TupleType:
+    def make_tuple_type(self, items: Sequence[Type]) -> TupleType:
+        r"""Create a proper TupleType from the given item types."""
+        tnf = TupleNormalForm.from_items(items)
+        return tnf.materialize(context=self)
+
+    def concatenate_tuples(
+        self,
+        args: Iterable[TupleType],
+        /,
+        *,
+        coerce_unpacks: bool = True,
+        coerce_unions: bool = True,
+    ) -> TupleType:
         r"""Concatenate multiple tuple types.
 
-        The result is in Tuple Normal Form.
+        Args:
+            coerce_unpacks: if True, coerce multiple variadic parts into a single
+                variadic part of the union of their argument types. (default: True)
+            coerce_unions: if True, coerce unions in variadic parts into a single
+                variadic part of the union of their argument types. (default: True)
         """
+        if not coerce_unpacks or not coerce_unions:
+            # https://discuss.python.org/t/should-unions-of-tuples-tvts-be-allowed-inside-unpack/102608
+            raise NotImplementedError
+
+        tnfs = [TupleNormalForm.from_tuple_type(t) for t in args]
+        tnf = TupleNormalForm.combine_concat(tnfs)
+        return tnf.materialize(context=self)
+
+    def tuple_from_items(self, items: Sequence[Type]) -> TupleType:
+        r"""Create a TupleType from the given item types.
+
+        This is a thin wrapper around TupleNormalForm.from_items.
+        """
+        tnf = TupleNormalForm.from_items(items)
+        return tnf.materialize(context=self)
 
 
 def infer_function_type_arguments(

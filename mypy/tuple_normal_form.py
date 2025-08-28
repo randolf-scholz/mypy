@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from itertools import chain
 from typing import TYPE_CHECKING, NamedTuple, NewType, TypeGuard, TypeIs
-from typing_extensions import NewType, TypeAlias as _TypeAlias
+from typing_extensions import NewType, TypeAlias as _TypeAlias, TypeGuard
 
 from mypy.typeops import make_simplified_union
 from mypy.types import (
@@ -44,41 +44,36 @@ r"""Types that are considered tuples or tuple-like."""
 AbstractUnpackType = NewType("AbstractUnpackType", UnpackType)
 
 
-def _is_empty_unpack(variadic: UnpackType) -> bool:
+def _is_empty_unpack(typ: Type, /) -> TypeGuard[UnpackType]:
     """Check if the variadic part is empty."""
-    content = get_proper_type(variadic.type)
+    proper_arg = get_proper_type(typ)
+    if not isinstance(proper_arg, UnpackType):
+        return False
+
+    content = get_proper_type(proper_arg.type)
     if isinstance(content, UninhabitedType):
         return True
-    elif isinstance(content, TypeList):
-        # check in unpacked concatenation is empty.
-        for item in content.items:
-            p_t = get_proper_type(item)
-            if isinstance(p_t, UnpackType) and _is_empty_unpack(p_t):
-                continue
-            return False
-        # empty list
-        return True
-    elif isinstance(content, UnionType):
-        # check in unpacked union is empty
-        for item in content.items:
-            p_t = get_proper_type(item)
-            if isinstance(p_t, UnpackType) and _is_empty_unpack(p_t):
-                continue
-            return False
-        # empty union
-        return True
-    elif isinstance(content, TupleType):
-        # check in unpacked tuple is empty
-        for item in content.items:
-            p_t = get_proper_type(item)
-            if isinstance(p_t, UnpackType) and _is_empty_unpack(p_t):
-                continue
-            return False
-        # empty tuple
-        return True
+    elif isinstance(content, TypeList | UnionType | TupleType):
+        return all(_is_empty_unpack(item) for item in content.items)
     # fallback: TypeVarTupleType, tuple[T, ...], list[T], etc.
     # TODO: should we try converting to Iterable[T] and check if T is UninhabitedType?
     return False
+
+
+def _is_non_empty_unpack(typ: Type, /) -> TypeGuard[UnpackType]:
+    """Check if the variadic part is non-empty."""
+    proper_arg = get_proper_type(typ)
+    if not isinstance(proper_arg, UnpackType):
+        return False
+
+    content = get_proper_type(proper_arg.type)
+    if isinstance(content, UninhabitedType):
+        return False
+    elif isinstance(content, TypeList | UnionType | TupleType):
+        return any(_is_non_empty_unpack(item) for item in content.items)
+    # fallback: TypeVarTupleType, tuple[T, ...], list[T], etc.
+    # TODO: should we try converting to Iterable[T] and check if T is UninhabitedType?
+    return True
 
 
 class TupleNormalForm(NamedTuple):
@@ -132,7 +127,10 @@ class TupleNormalForm(NamedTuple):
 
     @property
     def minimum_length(self) -> int:
-        """The minimum length of the tuple represented by this TupleNormalForm."""
+        """The minimum length of the tuple represented by this TupleNormalForm.
+
+        If the tuple is not variadic, this coincides with the actual length.
+        """
         # NOTE: Technically the variadic part could produce additional items,
         #    if multiple unpacks are present, e.g.
         #    tuple[int, *tuple[int, ...], str, *tuple[str, ...], str]
@@ -216,30 +214,52 @@ class TupleNormalForm(NamedTuple):
             - tuple[int, *tuple[int, ...], str, *tuple[str, ...], int]
               -> ([int], [*tuple[int, ...], str, *tuple[str, ...]], [int])
         """
+        return TupleNormalForm.from_items(typ.items)
+
+    @staticmethod
+    def from_items(items: Iterable[Type], /) -> TupleNormalForm:
         head_items: list[ProperType] = []
         tail_items: list[ProperType] = []
         body_items: list[ProperType] = []
+        seen_variadic = False
 
-        flattened_items = flatten_nested_tuples(typ.items)
-        generator = iter(flattened_items)
-
-        # determine the head part
-        for item in generator:
-            p_t = get_proper_type(item)
-            if isinstance(p_t, UnpackType):
-                body_items.append(p_t)
-                break
-            head_items.append(p_t)
-
-        # determine the body and tail parts
-        for item in generator:
-            p_t = get_proper_type(item)
-            if isinstance(p_t, UnpackType):
+        # determine the head, body and tail parts
+        for item in flatten_nested_tuples(items):
+            if _is_empty_unpack(item):
+                # skip empty unpacks
+                continue
+            elif _is_non_empty_unpack(item):
+                seen_variadic = True
                 body_items.extend(tail_items)
-                body_items.append(p_t)
+                body_items.append(item)
                 tail_items.clear()
+            elif seen_variadic:
+                tail_items.append(item)
             else:
-                tail_items.append(p_t)
+                head_items.append(item)
+
+        # # determine the head part
+        # for item in generator:
+        #     if _is_empty_unpack(item):
+        #         # skip empty unpacks
+        #         continue
+        #     elif _is_non_empty_unpack(item):
+        #         body_items.append(item)
+        #         break
+        #     else:
+        #         head_items.append(item)
+        #
+        # # determine the body and tail parts
+        # for item in generator:
+        #     if _is_empty_unpack(item):
+        #         # skip empty unpacks
+        #         continue
+        #     elif _is_non_empty_unpack(item):
+        #         body_items.extend(tail_items)
+        #         body_items.append(item)
+        #         tail_items.clear()
+        #     else:
+        #         tail_items.append(item)
 
         # the variadic part is the unpacking of the concatenation of all body items
         # formally represented by a UnpackType[TypeList[...]]
@@ -354,34 +374,24 @@ class TupleNormalForm(NamedTuple):
         return TupleNormalForm(target_head_items, UnpackType(joined_bodies), target_tail_items)
 
     @staticmethod
-    def combine_concat(args: Sequence[TupleNormalForm]) -> TupleNormalForm:
+    def combine_concat(tnfs: Sequence[TupleNormalForm]) -> TupleNormalForm:
         """Combine sequence of TupleNormalForm into a single TupleNormalForm.
 
         essentially converts ``(*x1, ..., *xn)`` -> ``*x` where x = [*x1, ..., *xn]``
         """
-        if len(args) == 0:
+        if len(tnfs) == 0:
             return TupleNormalForm([], UnpackType(UninhabitedType()), [])
 
-        if len(args) == 1:
-            return args[0]
+        if len(tnfs) == 1:
+            return tnfs[0]
 
-        return TupleNormalForm(
-            args[0].prefix,
-            UnpackType(
-                TypeList(
-                    [
-                        args[0].variadic,
-                        *args[0].suffix,
-                        *chain.from_iterable(
-                            (*arg.prefix, arg.variadic, *arg.suffix) for arg in args[1:-1]
-                        ),
-                        *args[-1].prefix,
-                        args[-1].variadic,
-                    ]
-                )
-            ),
-            args[-1].suffix,
+        items = (
+            item
+            for item in chain.from_iterable(
+                (*tnf.prefix, tnf.variadic, *tnf.suffix) for tnf in tnfs
+            )
         )
+        return TupleNormalForm.from_items(items)
 
     def materialize(self, context: ArgumentInferContext) -> TupleType:
         """Construct the actual TupleType from the TupleNormalForm.
@@ -421,7 +431,7 @@ class _TupleConstructor:
         if isinstance(unpacked, TypeVarTupleType | ParamSpecType):
             is_empty = False
         elif isinstance(unpacked, TupleType):
-            is_empty = not unpacked.proper_items()
+            is_empty = not unpacked.proper_items
         elif self.context.is_tuple_instance_type(unpacked):
             is_empty = isinstance(unpacked.args[0], UninhabitedType)
         else:
@@ -461,7 +471,7 @@ class _TupleConstructor:
             # and then returning the tuple unpacking *tuple[U₁ | U₂ | ... | Uₙ, ...]
             # See Also: https://discuss.python.org/t/should-unions-of-tuples-tvts-be-allowed-inside-unpack/102608
             parsed_items = []
-            for proper_item in unpacked.proper_items():
+            for proper_item in unpacked.proper_items:
                 if isinstance(proper_item, UnpackType):
                     # recurse when seeing UnpackType
                     parsed_items.append(self.parse_variadic_type(proper_item))

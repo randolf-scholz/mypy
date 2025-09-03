@@ -2897,10 +2897,11 @@ class TupleType(ProperType):
             slice_items = self.items[begin:end:stride]
         return TupleType(slice_items, fallback, self.line, self.column, self.implicit)
 
-    # TODO: should this be cached?
+    # TODO: Consider caching these properties.
+
     @property
     def proper_items(self) -> list[ProperType]:
-        """Return a list of proper types for the items in this tuple (flattened)."""
+        r"""Return a list of proper types for the items in this tuple (flattened)."""
         res = []
         for typ in self.items:
             p_t = get_proper_type(typ)
@@ -2913,32 +2914,50 @@ class TupleType(ProperType):
         return res
 
     @property
+    def unpack_index(self) -> int | None:
+        r"""The index of the Unpack in the tuple, or None if there is none."""
+        return find_unpack_in_list(self.proper_items)
+
+    @property
     def prefix(self) -> list[ProperType]:
-        """The prefix of the tuple before the first Unpack, or the entire tuple."""
-        proper_items = self.proper_items
-        unpack_index = find_unpack_in_list(proper_items)
-        return proper_items[:unpack_index]
+        r"""The prefix are all items before the first unpack."""
+        return self.proper_items[: self.unpack_index]
+
+    @property
+    def unpack(self) -> UnpackType | None:
+        r"""The Unpack in the tuple, or None if there is none."""
+        unpack_index = self.unpack_index
+        if unpack_index is None:
+            return None
+        return self.proper_items[unpack_index]
 
     @property
     def suffix(self) -> list[ProperType]:
-        """The suffix of the tuple after the last Unpack, or the entire tuple."""
-        proper_items = self.proper_items
-        unpack_index = find_unpack_in_list(proper_items)
+        r"""The suffix are all items after the last unpack (or none, if no unpack exists)."""
+        unpack_index = self.unpack_index
         if unpack_index is None:
             return []
-        return proper_items[unpack_index + 1 :]
+        return self.proper_items[unpack_index + 1 :]
 
     @property
     def is_variadic(self) -> bool:
-        """The variadic item if the tuple has one Unpack, otherwise None."""
-        proper_items = self.proper_items
-        unpack_index = find_unpack_in_list(proper_items)
-        return unpack_index is not None
+        r"""The variadic item if the tuple has one Unpack, otherwise None."""
+        return self.unpack_index is not None
 
     @property
     def minimum_length(self) -> int:
-        """The minimum length of the tuple."""
-        return len(self.proper_items) - self.is_variadic
+        r"""The minimum length of the tuple.
+
+        Note:
+            We assume that the variadic part has at least 0 items.
+            This assumption depends on the typing specification stating that
+            a tuple can have at most one unpack. If this is relaxed, then this
+            property may need to be changed. For example, currently
+            `tuple[int, *tuple[str, ...], int, *tuple[str, ...], int]` is illegal.
+            This tuple would have prefix `[int]` and suffix `[int]`,
+            but its minimum length is 3, not 2.
+        """
+        return len(self.prefix) + len(self.suffix)
 
 
 class TypedDictType(ProperType):

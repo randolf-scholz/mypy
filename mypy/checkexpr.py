@@ -2558,12 +2558,6 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
         The check_call docstring describes some of the arguments.
         """
 
-        # print(
-        #     f"checking argument types for callee: {callee}"
-        #     f"\n\t{formal_to_actual}"
-        #     f"\n\t{arg_kinds}"
-        # )
-
         check_arg = check_arg or self.check_arg
         # Keep track of consumed tuple *arg items.
         mapper = ArgTypeExpander(self.argument_infer_context())
@@ -2593,29 +2587,32 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
             if not actuals:
                 # missing actuals are checked in check_argument_count
                 continue
-            elif len(actuals) > 1:
-                assert formal_kind in (ARG_STAR, ARG_STAR2)
 
-            if formal_kind in (ARG_POS, ARG_OPT):
-                assert len(actuals) == 1
-                actual = actuals[0]
-                actual_type = arg_types[actual]
-                actual_kind = arg_kinds[actual]
-                expanded_actual = mapper.expand_actual_type(
-                    actual_type, actual_kind, None, formal_kind
-                )
-                check_arg(
-                    expanded_actual,
-                    actual_type,
-                    actual_kind,
-                    formal_type,
-                    actual + 1,
-                    i + 1,
-                    callee,
-                    object_type,
-                    args[actual],
-                    context,
-                )
+            if formal_kind in (ARG_POS, ARG_OPT, ARG_NAMED, ARG_NAMED_OPT, ARG_STAR2):
+                # these cases are all easy, we just need to check the actuals one by one
+                # Note: for ARG_POS, ARG_OPT multiple actuals are possible if the user
+                #   passed the same argument both positionally and as a keyword.
+                #   the error for this is reported in check_argument_count.
+                #   here we only check the argument types.
+                actual_types = [arg_types[a] for a in actuals]
+                actual_kinds = [arg_kinds[a] for a in actuals]
+
+                for actual, actual_type, actual_kind in zip(actuals, actual_types, actual_kinds):
+                    expanded_actual = mapper.expand_actual_type(
+                        actual_type, actual_kind, None, formal_kind
+                    )
+                    check_arg(
+                        expanded_actual,
+                        actual_type,
+                        actual_kind,
+                        formal_type,
+                        actual + 1,
+                        i + 1,
+                        callee,
+                        object_type,
+                        args[actual],
+                        context,
+                    )
 
             elif formal_kind == ARG_STAR:
                 assert len(actuals) >= 1

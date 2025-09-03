@@ -130,7 +130,9 @@ class ArgumentInferContext(NamedTuple):
             # TODO: add a 'fast path' (needs measurement) that uses the map_instance_to_supertype
             #   mechanism? (Only if it works: gh-19662)
             return self._solve_as_iterable(p_t)
-        return AnyType(TypeOfAny.from_error)
+        # return AnyType(TypeOfAny.from_error)
+        error_type = AnyType(TypeOfAny.from_error)
+        return self.make_iterable_instance_type(error_type)
 
     def _solve_as_iterable(self, typ: Type, /) -> IterableType | AnyType:
         r"""Use the solver to cast a type as Iterable[T].
@@ -167,7 +169,8 @@ class ArgumentInferContext(NamedTuple):
         (sol,), _ = solve_constraints([T], constraints)
 
         if sol is None:  # solving failed, return AnyType fallback
-            return AnyType(TypeOfAny.from_error)
+            error_type = AnyType(TypeOfAny.from_error)
+            return self.make_iterable_instance_type(error_type)
         return self.make_iterable_instance_type(sol)
 
     def get_tuple_item(self, tup: TupleType, index: int) -> Type | None:
@@ -205,9 +208,54 @@ class ArgumentInferContext(NamedTuple):
         parsed_unpack = self.as_iterable_type(unpacked)
         return parsed_unpack.args[0]
 
-    def get_tuple_slice(self, tup: TupleType, the_slice: slice) -> TupleType:
-        r"""Get the type of slicing the tuple.
+    def get_expanded_tuple_slice(self, tup: TupleType, the_slice: slice) -> TupleType:
+        r"""Slice a variadic tuple as if it was expanded into an infinite sequence.
 
+        Args:
+            tup: The tuple to slice.
+            slice: The slice to apply. Only supports the following cases:
+            - both start and stop have the same sign
+            - start is None and stop is a non-negative integer
+            - start is a negative integer and stop is None
+
+        Examples:
+            tuple[P1, P2, P3, *tuple[B, ...], S1, S2, S3]:
+            - [:3] -> tuple[P1, P2, P3]
+            - [1:4] -> tuple[P2, P3, B]
+            - [-4:-1] -> tuple[B, S1, S2]
+            - [-4:] -> tuple[B, S1, S2, S3]
+            - [:12:2] -> tuple[P1, P3, B, B, B, B]
+        """
+        # TODO: use match-case when we drop Python 3.9 support
+        start = the_slice.start
+        stop = the_slice.stop
+        step = the_slice.step
+
+        if start is None:
+            if stop is None:
+                raise ValueError("slice start and stop cannot both be None")
+            elif stop < 0:
+                raise ValueError("if slice start is None, stop must be non-negative")
+            else:
+                pass
+        elif stop is None:
+            if start >= 0:
+                raise ValueError("if slice stop is None, start must be negative")
+            else:
+                pass
+
+    def get_tuple_slice(self, tup: TupleType, the_slice: slice) -> TupleType:
+        r"""Get a special slice from the tuple.
+
+        If the tuple has no variadic part, this works like regular slicing.
+        However, if the tuple has a variadic part, then, depending on the indices,
+        this does something special:
+
+        1. If both start and stop are same signed integers (both non-negative or both negative),
+           then we slice as if the variadic part as expanded into an infinite sequence
+           of items, whose type we get by casting the unpack type to Iterable[T] and taking T.
+           This supports step values other than 1 or -1.
+        2. In all other cases,
         It is assumed the tuple is in Tuple Normal Form.
 
         t = tuple[P1, ..., Pn, *Vs, S1, ..., Sm]
@@ -232,26 +280,27 @@ class ArgumentInferContext(NamedTuple):
         if unpack_index is None:
             return TupleType(proper_items[the_slice], self.tuple_type)
 
-        prefix_length = unpack_index
-        suffix_length = len(proper_items) - unpack_index - 1
+        variadic_part = proper_items[unpack_index]
+        assert isinstance(variadic_part, UnpackType)
+        variadic_as_iterable = self.as_iterable_type(variadic_part.type)
+        iterable_type = variadic_as_iterable.args[0]
 
-        # get the projected start and stop indices
+        N = len(proper_items)
+        prefix_length = len(tup.prefix)
+        suffix_length = len(tup.suffix)
+
+        # get the corrected start and stop indices
         start = (
             0
             if the_slice.start is None
-            else max(-suffix_length, min(the_slice.start, prefix_length))
+            else max(min(-suffix_length, -1), min(the_slice.start, prefix_length))
         )
         stop = (
             -1
             if the_slice.stop is None
-            else max(-suffix_length, min(the_slice.stop, prefix_length))
+            else max(min(-suffix_length, -1), min(the_slice.stop, prefix_length))
         )
         step = the_slice.step
-
-        variadic_part = proper_items[unpack_index]
-        variadic_as_iterable = self.as_iterable_type(variadic_part.type)
-        iterable_type = variadic_as_iterable.args[0]
-        N = len(proper_items)
 
         if start >= 0 and stop >= 0:
             items = [
@@ -272,7 +321,7 @@ class ArgumentInferContext(NamedTuple):
             items = [
                 *proper_items[start : unpack_index + 1 : step],
                 variadic_part,
-                *proper_items[unpack_index - 1 : stop : step],
+                *proper_items[unpack_index - 1 : (stop % N) + 1 : step],
             ]
         elif start < 0 and stop < 0:
             items = [

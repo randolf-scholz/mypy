@@ -182,7 +182,7 @@ class TupleNormalForm(NamedTuple):
         # special case union of tuples
         elif isinstance(p_t, UnionType):
             # if all items are tuples, we can split them
-            tnfs = [TupleNormalForm.from_star_arg(x) for x in p_t.items]
+            tnfs = [TupleNormalForm.from_star_arg(x) for x in p_t.proper_items]
             return TupleNormalForm.combine_union(tnfs)
 
         # assume that the star args is some variadic type,
@@ -358,7 +358,11 @@ class TupleNormalForm(NamedTuple):
         # 3. process all bodies
         assert len(remaining_head_items) == len(remaining_tail_items) == len(bodies)
         remaining_body_items = [
-            [*remaining_head, body, *remaining_tail]
+            [
+                *remaining_head,
+                body,
+                *remaining_tail,
+            ]  # TODO: expand body in case like Unpack[<TypeList >] ?
             for remaining_head, body, remaining_tail in zip(
                 remaining_head_items, bodies, remaining_tail_items
             )
@@ -456,14 +460,15 @@ class _TupleConstructor:
             for proper_item in map(get_proper_type, unpacked.items):
                 if isinstance(proper_item, UnpackType):
                     # recurse when seeing UnpackType
-                    parsed_items.append(self.parse_variadic_type(proper_item))
-                else:
-                    parsed_items.append(proper_item)
+                    proper_item = self.parse_variadic_type(proper_item)
+                parsed_items.append(proper_item)
 
             # simplify if possible
             if len(parsed_items) == 1 and isinstance(parsed_items[0], UnpackType):
                 return parsed_items[0]
-            return UnpackType(TupleType(parsed_items, self.context.tuple_type))
+
+            tuple_result = TupleType(flatten_nested_tuples(parsed_items), self.context.tuple_type)
+            return UnpackType(tuple_result)
         elif isinstance(unpacked, UnionType):
             # Currently, Union of star args are not part of the typing spec.
             # Therefore, we need to reunify such unpackings.
@@ -474,12 +479,12 @@ class _TupleConstructor:
             for proper_item in unpacked.proper_items:
                 if isinstance(proper_item, UnpackType):
                     # recurse when seeing UnpackType
-                    parsed_items.append(self.parse_variadic_type(proper_item))
-                else:
-                    r = self.context.as_iterable_type(proper_item)
-                    parsed_items.append(r)
-            result_arg = make_simplified_union([it for it in parsed_items])
-            return UnpackType(self.context.make_tuple_instance_type(result_arg))
+                    proper_item = self.parse_variadic_type(proper_item)
+                r = self.context.as_iterable_type(proper_item)
+                parsed_items.append(r)
+            assert all(self.context.is_iterable_instance_type(r) for r in parsed_items)
+            union_arg = make_simplified_union([r.args[0] for r in parsed_items])
+            return UnpackType(self.context.make_tuple_instance_type(union_arg))
         elif isinstance(
             unpacked, ParamSpecType | TypeVarTupleType
         ) or self.context.is_tuple_instance_type(unpacked):

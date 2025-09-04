@@ -2959,6 +2959,20 @@ class TupleType(ProperType):
         """
         return len(self.prefix) + len(self.suffix)
 
+    def simplify(self) -> TupleType | Instance | TypeVarType:
+        """Simplify a tuple type that is just an unpack.
+
+        Example:
+            tuple[*tuple[int, ...]] -> tuple[int, ...]
+            tuple[*Ts]              -> Ts
+            tuple[*tuple[int, str]] -> tuple[int, str]
+        """
+        proper_items = self.proper_items
+        if len(proper_items) == 1 and isinstance(first := proper_items[0], UnpackType):
+            assert isinstance(first.type, TupleType | Instance | TypeVarType)
+            return first.type
+        return self
+
 
 class TypedDictType(ProperType):
     """Type of TypedDict object {'k1': v1, ..., 'kn': vn}.

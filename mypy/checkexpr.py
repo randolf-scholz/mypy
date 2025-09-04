@@ -2406,49 +2406,102 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
         )
 
         # Check for too many or few values for formals.
-        for i, kind in enumerate(callee.arg_kinds):
-            mapped_args = formal_to_actual[i]
-            if kind.is_required() and not mapped_args and not is_unexpected_arg_error:
-                # No actual for a mandatory formal
-                if kind.is_positional():
+        for i, actuals in enumerate(formal_to_actual):
+            formal_kind = callee.arg_kinds[i]
+            if not actuals:
+                if formal_kind == ARG_POS and not is_unexpected_arg_error:
+                    # No actuals for a mandatory formal
                     self.msg.too_few_arguments(callee, context, actual_names)
                     if object_type and callable_name and "." in callable_name:
                         self.missing_classvar_callable_note(object_type, callable_name, context)
-                else:
+                    ok = False
+                elif formal_kind == ARG_NAMED and not is_unexpected_arg_error:
                     argname = callee.arg_names[i] or "?"
                     self.msg.missing_named_argument(callee, context, argname)
-                ok = False
-            elif not kind.is_star() and is_duplicate_mapping(
-                mapped_args, actual_types, actual_kinds
-            ):
-                if self.chk.in_checked_function() or isinstance(
-                    get_proper_type(actual_types[mapped_args[0]]), TupleType
+                    ok = False
+                elif formal_kind == ARG_STAR:
+                    # check if the star argument has a minimum size (e.g. *tuple[*tuple[int, ...], int])
+                    star_param_type = TupleNormalForm.from_star_param(callee.arg_types[i])
+                    argname = callee.arg_names[i]
+                    if star_param_type.minimum_length:
+                        self.msg.too_few_arguments_for_star_arg(
+                            callee, context, argname, star_param_type.minimum_length
+                        )
+
+                elif callee.param_spec() is not None and callee.special_sig != "partial":
+                    self.msg.too_few_arguments(callee, context, actual_names)
+                    ok = False
+            else:
+                if (
+                    formal_kind in (ARG_POS, ARG_OPT, ARG_NAMED, ARG_NAMED_OPT)
+                    and is_duplicate_mapping(actuals, actual_types, actual_kinds)
+                    and (
+                        self.chk.in_checked_function()
+                        or isinstance(get_proper_type(actual_types[actuals[0]]), TupleType)
+                    )
                 ):
                     self.msg.duplicate_argument_value(callee, i, context)
                     ok = False
-            elif (
-                kind.is_named()
-                and mapped_args
-                and actual_kinds[mapped_args[0]] not in [nodes.ARG_NAMED, nodes.ARG_STAR2]
-            ):
-                # Positional argument when expecting a keyword argument.
-                self.msg.too_many_positional_arguments(callee, context)
-                ok = False
-            elif callee.param_spec() is not None:
-                if not mapped_args and callee.special_sig != "partial":
-                    self.msg.too_few_arguments(callee, context, actual_names)
+                elif formal_kind in (ARG_NAMED, ARG_NAMED_OPT) and actual_kinds[
+                    actuals[0]
+                ] not in [ARG_NAMED, ARG_STAR2]:
+                    # Positional argument when expecting a keyword argument.
+                    self.msg.too_many_positional_arguments(callee, context)
                     ok = False
-                elif len(mapped_args) > 1:
+                elif callee.param_spec() is not None and len(actuals) > 1:
                     paramspec_entries = sum(
                         isinstance(get_proper_type(actual_types[k]), ParamSpecType)
-                        for k in mapped_args
+                        for k in actuals
                     )
-                    if actual_kinds[mapped_args[0]] == nodes.ARG_STAR and paramspec_entries > 1:
+                    if actual_kinds[actuals[0]] == ARG_STAR and paramspec_entries > 1:
                         self.msg.fail("ParamSpec.args should only be passed once", context)
                         ok = False
-                    if actual_kinds[mapped_args[0]] == nodes.ARG_STAR2 and paramspec_entries > 1:
+                    if actual_kinds[actuals[0]] == ARG_STAR2 and paramspec_entries > 1:
                         self.msg.fail("ParamSpec.kwargs should only be passed once", context)
                         ok = False
+        # for i, kind in enumerate(callee.arg_kinds):
+        #     mapped_args = formal_to_actual[i]
+        #     if kind.is_required() and not mapped_args and not is_unexpected_arg_error:
+        #         # No actual for a mandatory formal
+        #         if kind.is_positional():
+        #             self.msg.too_few_arguments(callee, context, actual_names)
+        #             if object_type and callable_name and "." in callable_name:
+        #                 self.missing_classvar_callable_note(object_type, callable_name, context)
+        #         else:
+        #             argname = callee.arg_names[i] or "?"
+        #             self.msg.missing_named_argument(callee, context, argname)
+        #         ok = False
+        #     elif not kind.is_star() and is_duplicate_mapping(
+        #         mapped_args, actual_types, actual_kinds
+        #     ):
+        #         if self.chk.in_checked_function() or isinstance(
+        #             get_proper_type(actual_types[mapped_args[0]]), TupleType
+        #         ):
+        #             self.msg.duplicate_argument_value(callee, i, context)
+        #             ok = False
+        #     elif (
+        #         kind.is_named()
+        #         and mapped_args
+        #         and actual_kinds[mapped_args[0]] not in [nodes.ARG_NAMED, nodes.ARG_STAR2]
+        #     ):
+        #         # Positional argument when expecting a keyword argument.
+        #         self.msg.too_many_positional_arguments(callee, context)
+        #         ok = False
+        #     elif callee.param_spec() is not None:
+        #         if not mapped_args and callee.special_sig != "partial":
+        #             self.msg.too_few_arguments(callee, context, actual_names)
+        #             ok = False
+        #         elif len(mapped_args) > 1:
+        #             paramspec_entries = sum(
+        #                 isinstance(get_proper_type(actual_types[k]), ParamSpecType)
+        #                 for k in mapped_args
+        #             )
+        #             if actual_kinds[mapped_args[0]] == nodes.ARG_STAR and paramspec_entries > 1:
+        #                 self.msg.fail("ParamSpec.args should only be passed once", context)
+        #                 ok = False
+        #             if actual_kinds[mapped_args[0]] == nodes.ARG_STAR2 and paramspec_entries > 1:
+        #                 self.msg.fail("ParamSpec.kwargs should only be passed once", context)
+        #                 ok = False
         return ok
 
     def check_for_extra_actual_arguments(

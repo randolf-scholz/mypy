@@ -139,6 +139,32 @@ class TupleNormalForm(NamedTuple):
         return len(self.prefix) + len(self.suffix)
 
     @staticmethod
+    def from_star_param(star_param: Type, /) -> TupleNormalForm:
+        """Create a TupleNormalForm from the type of a ``*args: T`` annotation.
+
+        During Semantic Analysis, the type of `*args: T` is not always wrapped in `UnpackType`.
+        in particular, ``*args: int`` just gives `int`.
+
+        See Also: `from_star_arg` for types passed as star arguments.
+        """
+        p_t = get_proper_type(star_param)
+        if isinstance(p_t, UnpackType):
+            # we can use the same logic as from_star_arg
+            return TupleNormalForm.from_star_arg(p_t)
+        elif isinstance(p_t, ParamSpecType):
+            # ParamSpecType is always variadic
+            variadic_part = UnpackType(p_t, from_star_syntax=True)
+            return TupleNormalForm([], variadic_part, [])
+        else:
+            # otherwise we have an annotation like `*args: int`
+            # this should be treated as if it were `*args: *tuple[int, ...]`
+            # we deal with this by representing it as Unpack[<TypeList int>]
+            # despite being conceptually equal to a single item, during materialization
+            # this will be converted back to tuple[int, ...] in
+            variadic_part = UnpackType(TypeList([p_t]), from_star_syntax=True)
+            return TupleNormalForm([], variadic_part, [])
+
+    @staticmethod
     def from_star_arg(star_arg: Type, /) -> TupleNormalForm:
         """Create a TupleNormalForm from a type that was passed as a star argument.
 
@@ -447,6 +473,25 @@ class _TupleConstructor:
 
         return TupleType([*tnf.prefix, parsed_variadic_part, *tnf.suffix], self.context.tuple_type)
 
+    def _materialize_variadic_concatenation(self, items: list[ProperType]) -> UnpackType:
+        if not items:
+            # return Unpack[tuple[()]]
+            return UnpackType(self.context.make_tuple_type([]))
+        if len(items) == 1 and isinstance(unpack := items[0], UnpackType):
+            # single unpack, just return it directly
+            return unpack
+
+        # otherwise, convert every Unpack into an iterable type
+        item_types: list[Type] = []
+        for item in items:
+            if isinstance(item, UnpackType):
+                iterable_type = self.context.as_iterable_type(item.type)
+                item_types.append(iterable_type.args[0])
+            else:
+                item_types.append(item)
+        unified_item_type = make_simplified_union(item_types)
+        return UnpackType(self.context.make_tuple_instance_type(unified_item_type))
+
     def _unify_multiple_unpacks(self, items: list[ProperType]) -> list[ProperType]:
         r"""If multiple UnpackType are present, unify them into a single Unpack[tuple[T, ...]]."""
 
@@ -501,6 +546,8 @@ class _TupleConstructor:
                     proper_item = self.parse_variadic_type(proper_item)
                 parsed_items.append(proper_item)
 
+            return self._materialize_variadic_concatenation(parsed_items)
+
             # if multiple unpacks are present, we unify everything into a single tuple[T, ...]
             parsed_items = self._unify_multiple_unpacks(parsed_items)
 
@@ -508,8 +555,11 @@ class _TupleConstructor:
             if len(parsed_items) == 1 and isinstance(parsed_items[0], UnpackType):
                 return parsed_items[0]
 
+            # otherwise, combine to
+
             tuple_result = TupleType(flatten_nested_tuples(parsed_items), self.context.tuple_type)
             return UnpackType(tuple_result)
+
         elif isinstance(unpacked, UnionType):
             # Currently, Union of star args are not part of the typing spec.
             # Therefore, we need to reunify such unpackings.

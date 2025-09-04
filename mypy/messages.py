@@ -942,6 +942,15 @@ class MessageBuilder:
             context=context,
         )
 
+    def too_few_arguments_for_star_arg(
+        self, callee: CallableType, context: Context, arg_name: str, number_expected
+    ) -> None:
+        if self.prefer_simple_messages():
+            msg = "Too few arguments"
+        else:
+            msg = f"Too few arguments for {for_function(callee)}; expected at least {number_expected} items for *{arg_name}"
+        self.fail(msg, context, code=codes.CALL_ARG)
+
     def too_few_arguments(
         self, callee: CallableType, context: Context, argument_names: Sequence[str | None] | None
     ) -> None:
@@ -996,7 +1005,7 @@ class MessageBuilder:
             msg = "Too many positional arguments"
         else:
             msg = "Too many positional arguments" + for_function(callee)
-        self.fail(msg, context)
+        self.fail(msg, context, code=codes.CALL_ARG)
         self.maybe_note_about_special_args(callee, context)
 
     def maybe_note_about_special_args(self, callee: CallableType, context: Context) -> None:

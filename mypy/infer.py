@@ -333,7 +333,7 @@ class ArgumentInferContext(NamedTuple):
             items = []
         return TupleType(items, self.tuple_type)
 
-    def make_tuple_type(self, items: Sequence[Type]) -> TupleType:
+    def make_tuple_type(self, items: Sequence[Type], /) -> TupleType:
         r"""Create a proper TupleType from the given item types."""
         tnf = TupleNormalForm.from_items(items)
         return tnf.materialize(context=self)

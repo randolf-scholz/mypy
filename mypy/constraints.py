@@ -184,15 +184,30 @@ def infer_constraints_for_callable(
                 # constraints, instead store them and infer single constraint at the end.
                 # It is impossible to map actual kind to formal kind, so use some heuristic.
                 # This inference is used as a fallback, so relying on heuristic should be OK.
-                for actual_kind, actual_name, expanded_actual, original_actual in zip(
-                    actual_arg_kinds, actual_arg_names, expanded_actuals, actual_arg_types
+                for actual_kind, actual_name, expanded_actual in zip(
+                    actual_arg_kinds, actual_arg_names, expanded_actuals
                 ):
                     if actual_kind in (ARG_POS, ARG_NAMED):
-                        # do not use the expanded form for positional arguments
-                        param_spec_arg_types.append(original_actual)
+                        param_spec_arg_types.append(expanded_actual)
                         param_spec_arg_kinds.append(ARG_POS)
                         param_spec_arg_names.append(actual_name)
-                    elif actual_kind in (ARG_STAR, ARG_STAR2):
+                    elif actual_kind == ARG_STAR:
+                        assert isinstance(expanded_actual, TupleType)
+
+                        # simplify the tuple type if possible
+                        expanded_actual = expanded_actual.simplify()
+                        if (
+                            isinstance(expanded_actual, Instance)
+                            and expanded_actual.type.fullname == "builtins.tuple"
+                        ):
+                            # treat *tuple[T, ...] as if it were T
+                            # TODO: shouldn't this normalization be moved into the constructor of ParamSpecType?
+                            expanded_actual = expanded_actual.args[0]
+
+                        param_spec_arg_types.append(expanded_actual)
+                        param_spec_arg_kinds.append(actual_kind)
+                        param_spec_arg_names.append(actual_name)
+                    elif actual_kind == ARG_STAR2:
                         param_spec_arg_types.append(expanded_actual)
                         param_spec_arg_kinds.append(actual_kind)
                         param_spec_arg_names.append(actual_name)

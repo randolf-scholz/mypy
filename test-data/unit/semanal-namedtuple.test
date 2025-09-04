@@ -182,7 +182,7 @@ N = NamedTuple('N') # E: Too few arguments for "NamedTuple()"
 
 [case testTypingNamedTupleWithManyArguments]
 from typing import NamedTuple
-N = NamedTuple('N', [], []) # E: Too many positional arguments for "NamedTuple()"
+N = NamedTuple('N', [], []) # E: Too many arguments for "NamedTuple()"
 [builtins fixtures/tuple.pyi]
 
 [case testTypingNamedTupleWithInvalidName]

@@ -438,7 +438,7 @@ def foo(*args: Unpack[Tuple[int, str]]) -> None:
 foo(0, "foo")
 foo(0, 1)  # E: Argument 2 to "foo" has incompatible type "int"; expected "str"
 foo("foo", "bar")  # E: Argument 1 to "foo" has incompatible type "str"; expected "int"
-foo(0, "foo", 1)  # E: Too many arguments for "foo"
+foo(0, "foo", 1)  # E: Too many positional arguments for "foo"
 foo(0)  # E: Too few arguments for "foo"
 foo()  # E: Too few arguments for "foo"
 foo(*(0, "foo"))
@@ -961,7 +961,7 @@ Ts = TypeVarTuple("Ts")
 def f(x: Ts) -> Ts:  # E: TypeVarTuple "Ts" is only valid with an unpack
     return x
 
-v = f(1, 2, "A")  # E: Too many arguments for "f"
+v = f(1, 2, "A")  # E: Too many positional arguments for "f"
 reveal_type(v)  # N: Revealed type is "Any"
 [builtins fixtures/tuple.pyi]
 

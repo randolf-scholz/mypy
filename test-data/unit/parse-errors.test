@@ -250,7 +250,7 @@ file:1: error: Function has duplicate type signatures
 def f(x, y): # type: (X, Y, Z) -> z
   pass
 [out]
-file:1: error: Type signature has too many arguments
+file:1: error: Type signature has Too many positional arguments
 
 [case testTooFewTypes]
 def f(x, y): # type: (X) -> z

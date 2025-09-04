@@ -383,7 +383,7 @@ h: Callable[[A], None]
 def f(x): pass
 
 f()     # E: Missing positional argument "x" in call to "f"
-f(x, x) # E: Too many arguments for "f"
+f(x, x) # E: Too many positional arguments for "f"
 if int():
     g = f   # E: Incompatible types in assignment (expression has type "Callable[[Any], Any]", variable has type "Callable[[], None]")
 f(a)
@@ -440,9 +440,9 @@ g2: Callable[[A, A], None]
 g3: Callable[[A, A, A], None]
 g4: Callable[[A, A, A, A], None]
 
-f01(a, a)       # E: Too many arguments for "f01"
+f01(a, a)       # E: Too many positional arguments for "f01"
 f13()           # E: Missing positional argument "x" in call to "f13"
-f13(a, a, a, a) # E: Too many arguments for "f13"
+f13(a, a, a, a) # E: Too many positional arguments for "f13"
 if int():
     g2 = f01 # E: Incompatible types in assignment (expression has type "Callable[[Any], Any]", variable has type "Callable[[A, A], None]")
 if int():

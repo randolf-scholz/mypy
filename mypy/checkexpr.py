@@ -2474,8 +2474,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                 # TODO: Consider using match-case.
                 if kind == ARG_POS:
                     ok = False
-                    # self.msg.too_many_positional_arguments(callee, context)
-                    self.msg.too_many_arguments(callee, context)
+                    self.msg.too_many_positional_arguments(callee, context)
 
                 elif kind == ARG_NAMED:
                     ok = False
@@ -2708,7 +2707,9 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                                     formal_tuple, formal_unpack_index
                                 )
                         elif actual_kind == ARG_STAR:
-                            assert isinstance(expanded_actual, TupleType)
+                            assert isinstance(
+                                expanded_actual, TupleType
+                            ), f"{type(expanded_actual)}"
                             assert not expanded_actual.is_variadic
                             size = expanded_actual.minimum_length
                             expected_items = []

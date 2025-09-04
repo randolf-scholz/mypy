@@ -2250,7 +2250,7 @@ def fn_posonly(x: int, /) -> None: ...
 def fn_posonly_args(x: int, /, y: str) -> None: ...
 
 run(fn)  # E: Argument 1 to "run" has incompatible type "Callable[[], None]"; expected "Callable[[int], None]"
-run(fn_args, 1, 'a')  # E: Too many arguments for "run" \
+run(fn_args, 1, 'a')  # E: Too many positional arguments for "run" \
                       # E: Argument 2 to "run" has incompatible type "int"; expected "str"
 run(fn_args, y='a')
 run(fn_args, 'a')
@@ -2377,7 +2377,7 @@ def run4(func: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
 
 def run_bad(func: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
     func2 = partial(func, *args, **kwargs)
-    return func2(*args)  # E: Too many arguments
+    return func2(*args)  # E: Too many positional arguments
 
 def run_bad2(func: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
     func2 = partial(func, **kwargs)
@@ -2436,7 +2436,7 @@ def run_bad(func: Callable[Concatenate[int, P], T], *args: P.args, **kwargs: P.k
 def run_bad2(func: Callable[Concatenate[int, P], T], *args: P.args, **kwargs: P.kwargs) -> T:
     func2 = partial(func, 1, *args)
     func2()  # E: Too few arguments
-    func2(*args, **kwargs)  # E: Too many arguments
+    func2(*args, **kwargs)  # E: Too many positional arguments
     return func2(1, **kwargs)  # E: Argument 1 has incompatible type "int"; expected "P.args"
 
 def run_bad3(func: Callable[Concatenate[int, P], T], *args: P.args, **kwargs: P.kwargs) -> T:

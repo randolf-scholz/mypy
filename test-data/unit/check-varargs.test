@@ -267,8 +267,8 @@ f(*(b, b, c)) # E: Argument 1 to "f" has incompatible type "*tuple[B, B, C]"; ex
 f(a, *(b, b)) # E: Argument 2 to "f" has incompatible type "*tuple[B, B]"; expected "C"
 f(b, *(b, c)) # E: Argument 1 to "f" has incompatible type "B"; expected "A"
 f(*(a, b))    # E: Missing positional arguments "b", "c" in call to "f"
-f(*(a, b, c, c)) # E: Too many arguments for "f"
-f(a, *(b, c, c)) # E: Too many arguments for "f"
+f(*(a, b, c, c)) # E: Too many positional arguments for "f"
+f(a, *(b, c, c)) # E: Too many positional arguments for "f"
 f(*(a, b, c))
 f(a, *(b, c))
 f(a, b, *(c,))
@@ -361,7 +361,7 @@ class A: pass
 
 d: Any
 a: A
-f(a, a, *d) # E: Too many arguments for "f"
+f(a, a, *d) # E: Too many positional arguments for "f"
 f(a, *d)    # Ok
 f(*d)       # Ok
 
@@ -514,7 +514,7 @@ def test_takes_exactly_3(
     takes_exactly_3(*x1)
     takes_exactly_3(*x2)
     takes_exactly_3(*x3)
-    takes_exactly_3(*x4)  # E: Too many arguments for "takes_exactly_3"
+    takes_exactly_3(*x4)  # E: Too many positional arguments for "takes_exactly_3"
 [builtins fixtures/tuple.pyi]
 
 
@@ -1180,7 +1180,7 @@ if int():
 if int():
     b, b = f(a, *(b,))  # E: Argument 1 to "f" has incompatible type "A"; expected "B"
 if int():
-    a, b = f(*(a, b, b)) # E: Too many arguments for "f"
+    a, b = f(*(a, b, b)) # E: Too many positional arguments for "f"
 if int():
     a, b = f(*(a, b))
 if int():
@@ -1841,5 +1841,5 @@ def test_takes_exactly_3(
     takes_exactly_3(*x1)
     takes_exactly_3(*x2)
     takes_exactly_3(*x3)
-    takes_exactly_3(*x4)  # E: Too many arguments for "takes_exactly_3"
+    takes_exactly_3(*x4)  # E: Too many positional arguments for "takes_exactly_3"
 [builtins fixtures/tuple.pyi]

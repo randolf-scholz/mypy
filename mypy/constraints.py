@@ -139,6 +139,9 @@ def infer_constraints_for_callable(
                 break
 
     for i, actuals in enumerate(formal_to_actual):
+        if not actuals:
+            continue
+
         if True:
             formal_kind = callee.arg_kinds[i]
             formal_name = callee.arg_names[i]
@@ -1492,6 +1495,16 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
                     actual_unpack_fallback = UnpackType(
                         actual_unpacked.tuple_fallback.copy_modified(args=[actual_generic])
                     )
+                elif isinstance(actual_unpacked, ParamSpecType):
+                    actual_generic = AnyType(TypeOfAny.from_omitted_generics)
+                    upper_bound = get_proper_type(actual_unpacked.upper_bound)
+                    assert (
+                        isinstance(upper_bound, Instance)
+                        and upper_bound.type.fullname == "builtins.tuple"
+                    )
+                    actual_unpack_fallback = UnpackType(
+                        upper_bound.copy_modified(args=[actual_generic])
+                    )
                 elif (
                     isinstance(actual_unpacked, Instance)
                     and actual_unpacked.type.fullname == "builtins.tuple"
@@ -1500,7 +1513,7 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
                     actual_unpack_fallback = actual_unpack
                     actual_generic = actual_unpacked.args[0]
                 else:
-                    raise NotImplementedError
+                    raise NotImplementedError(f"Got unexpected unpack type {actual_unpacked}")
 
             actual_prefix_size = len(actual_prefix)
             actual_suffix_size = len(actual_suffix)
@@ -1726,7 +1739,7 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
                         actual_unpack,
                         *actual_suffix[: actual_suffix_size - template_suffix_size],
                     ]
-                    remaining_actual = TupleType(items, fallback=actual.partial_fallback)
+                    remaining_actual = TupleType(items, fallback=actual_unpack_fallback)
                     constraints += infer_constraints(
                         template_unpack.type, remaining_actual, self.direction
                     )

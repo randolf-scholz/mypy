@@ -704,7 +704,7 @@ class MyClass: ...
 from typing_extensions import TypeAlias
 
 x: TypeAlias = list(int)  # E: Invalid type alias: expression is not a valid type \
-                          # E: Too many arguments for "list"
+                          # E: Too many positional arguments for "list"
 a: x
 [builtins fixtures/tuple.pyi]
 

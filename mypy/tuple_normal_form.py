@@ -447,8 +447,46 @@ class _TupleConstructor:
 
         return TupleType([*tnf.prefix, parsed_variadic_part, *tnf.suffix], self.context.tuple_type)
 
+    def _unify_multiple_unpacks(self, items: list[ProperType]) -> list[ProperType]:
+        r"""If multiple UnpackType are present, unify them into a single Unpack[tuple[T, ...]]."""
+
+        # algorithm very similar to TupleNormalForm.from_items, but now we construct a concrete
+        # type.
+        seen_unpacks = 0
+        prefix_items: list[ProperType] = []
+        unpack_items: list[ProperType] = []
+        suffix_items: list[ProperType] = []
+
+        for item in flatten_nested_tuples(items):
+            if isinstance(item, UnpackType):
+                seen_unpacks += 1
+                unpack_items.extend(suffix_items)
+                unpack_items.append(item)
+                suffix_items.clear()
+            elif seen_unpacks:
+                suffix_items.append(item)
+            else:
+                prefix_items.append(item)
+
+        if seen_unpacks <= 1:
+            # we can just use the original list
+            return items
+
+        # unify all members of unpack_items into a single tuple[T, ...]
+        item_types = []
+        for item in unpack_items:
+            if isinstance(item, UnpackType):
+                iterable_type = self.context.as_iterable_type(item.type)
+                item_types.append(iterable_type.args[0])
+            else:
+                item_types.append(item)
+
+        unified_item_type = make_simplified_union(item_types)
+        unified_unpacked = UnpackType(self.context.make_tuple_instance_type(unified_item_type))
+        return [*prefix_items, unified_unpacked, *suffix_items]
+
     def parse_variadic_type(self, typ: AbstractUnpackType, /) -> UnpackType:
-        """Converts an abstract UnpackType into a proper UnpackType,
+        """Converts a dirty UnpackType into a proper UnpackType,
 
         by converting unexpected members (TypeList/UnionType) into proper types.
         """
@@ -462,6 +500,9 @@ class _TupleConstructor:
                     # recurse when seeing UnpackType
                     proper_item = self.parse_variadic_type(proper_item)
                 parsed_items.append(proper_item)
+
+            # if multiple unpacks are present, we unify everything into a single tuple[T, ...]
+            parsed_items = self._unify_multiple_unpacks(parsed_items)
 
             # simplify if possible
             if len(parsed_items) == 1 and isinstance(parsed_items[0], UnpackType):

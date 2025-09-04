@@ -139,8 +139,8 @@ def infer_constraints_for_callable(
                 break
 
     for i, actuals in enumerate(formal_to_actual):
-        if not actuals:
-            continue
+        # if not actuals:
+        #     continue
 
         if True:
             formal_kind = callee.arg_kinds[i]
@@ -212,7 +212,7 @@ def infer_constraints_for_callable(
                     else:
                         assert_never(kind)
 
-                # concatenate all these tuples
+                # concatenate all these tuples into a normalized tuple type
                 actual_tuple = context.make_tuple_type(items)
                 # actual_tuple = context.concatenate_tuples(expanded_actuals)
 
@@ -1177,15 +1177,16 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
             and self.direction == SUPERTYPE_OF
         ):
             # infer constraints for (template=tuple[T, ...]) :> (actual=tuple[T1, ..., Tn])
+            # Note: tuple[T, ...] :> tuple[()] does not imply any constraints on T
             generic_type = template.args[0]
 
-            if not actual.proper_items:
-                # special case: tuple[T, ...] :> tuple[()]
-                # This is only possible when T = Never
-                return [
-                    Constraint(generic_type, SUBTYPE_OF, UninhabitedType()),
-                    Constraint(generic_type, SUPERTYPE_OF, UninhabitedType()),
-                ]
+            # if not actual.proper_items:
+            #     # special case: tuple[T, ...] :> tuple[()]
+            #     #
+            #     return [
+            #         Constraint(generic_type, SUBTYPE_OF, UninhabitedType()),
+            #         Constraint(generic_type, SUPERTYPE_OF, UninhabitedType()),
+            #     ]
 
             constraints: list[Constraint] = []
             for item in actual.proper_items:

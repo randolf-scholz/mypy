@@ -472,7 +472,7 @@ class ExpandTypeVisitor(TrivialSyntheticTypeTranslator):
                         return t.partial_fallback.accept(self)
                     return unpacked
         fallback = t.partial_fallback.accept(self)
-        assert isinstance(fallback, ProperType) and isinstance(fallback, Instance)
+        assert isinstance(fallback, ProperType) and isinstance(fallback, Instance), f"{fallback=}"
         return t.copy_modified(items=items, fallback=fallback)
 
     def visit_typeddict_type(self, t: TypedDictType) -> Type:

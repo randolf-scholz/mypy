@@ -2489,7 +2489,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                     star_arg_type = TupleNormalForm.from_star_arg(actual_types[i])
                     if star_arg_type.minimum_length > 0:
                         ok = False
-                        self.msg.too_many_arguments(callee, context)
+                        self.msg.too_many_positional_arguments(callee, context)
 
                 elif kind == ARG_STAR2:
                     # Accept all types for double-starred arguments, because they could be empty
@@ -2508,7 +2508,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                         # *args/**kwargs can be applied even if the function takes a fixed
                         # number of positional arguments. This may succeed at runtime.
                         ok = False
-                        self.msg.too_many_arguments(callee, context)
+                        self.msg.too_many_positional_arguments(callee, context)
 
                     # TODO: cover the case when ARG_STAR exists but is not variadic.
 
@@ -2980,7 +2980,8 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
 
                 if len(callee_arg_types) != len(actual_types):
                     if len(actual_types) > len(callee_arg_types):
-                        self.chk.msg.too_many_arguments(callee, context)
+                        # self.chk.msg.too_many_arguments(callee, context)
+                        pass
                     else:
                         self.chk.msg.too_few_arguments(callee, context, None)
                     continue

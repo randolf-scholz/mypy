@@ -582,14 +582,14 @@ fake_enum4 = Enum(value='fake_enum4', names=['a', 'b'] , module=__name__)
 from enum import Enum, IntEnum
 A = Enum('A')  # E: Too few arguments for Enum()
 B = Enum('B', 42)  # E: Second argument of Enum() must be string, tuple, list or dict literal for mypy to determine Enum members
-C = Enum('C', 'a b', 'x', 'y', 'z', 'p', 'q')  # E: Too many positional arguments for Enum()
+C = Enum('C', 'a b', 'x', 'y', 'z', 'p', 'q')  # E: Too many arguments for Enum()
 D = Enum('D', foo)  # E: Second argument of Enum() must be string, tuple, list or dict literal for mypy to determine Enum members \
                     # E: Name "foo" is not defined
 bar = 'x y z'
 E = Enum('E', bar)  # E: Second argument of Enum() must be string, tuple, list or dict literal for mypy to determine Enum members
 I = IntEnum('I')  # E: Too few arguments for IntEnum()
 J = IntEnum('I', 42)  # E: Second argument of IntEnum() must be string, tuple, list or dict literal for mypy to determine Enum members
-K = IntEnum('I', 'p q', 'x', 'y', 'z', 'p', 'q')  # E: Too many positional arguments for IntEnum()
+K = IntEnum('I', 'p q', 'x', 'y', 'z', 'p', 'q')  # E: Too many arguments for IntEnum()
 L = Enum('L', ' ')  # E: Enum() needs at least one item
 M = Enum('M', ())  # E: Enum() needs at least one item
 N = IntEnum('M', [])  # E: IntEnum() needs at least one item
@@ -605,6 +605,7 @@ W.c  # E: "type[W]" has no attribute "c"
 X = Enum('Something', 'a b')  # E: String argument 1 "Something" to enum.Enum(...) does not match variable name "X"
 reveal_type(X.a)  # N: Revealed type is "Literal[__main__.Something@23.a]?"
 X.asdf  # E: "type[Something@23]" has no attribute "asdf"
+
 
 [builtins fixtures/tuple.pyi]
 [typing fixtures/typing-medium.pyi]

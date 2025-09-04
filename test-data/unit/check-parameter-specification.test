@@ -2377,7 +2377,7 @@ def run4(func: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
 
 def run_bad(func: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
     func2 = partial(func, *args, **kwargs)
-    return func2(*args)  # E: Too many positional arguments
+    return func2(*args)  # E: Too many arguments
 
 def run_bad2(func: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
     func2 = partial(func, **kwargs)
@@ -2436,7 +2436,7 @@ def run_bad(func: Callable[Concatenate[int, P], T], *args: P.args, **kwargs: P.k
 def run_bad2(func: Callable[Concatenate[int, P], T], *args: P.args, **kwargs: P.kwargs) -> T:
     func2 = partial(func, 1, *args)
     func2()  # E: Too few arguments
-    func2(*args, **kwargs)  # E: Too many positional arguments
+    func2(*args, **kwargs)  # E: Too many arguments
     return func2(1, **kwargs)  # E: Argument 1 has incompatible type "int"; expected "P.args"
 
 def run_bad3(func: Callable[Concatenate[int, P], T], *args: P.args, **kwargs: P.kwargs) -> T:

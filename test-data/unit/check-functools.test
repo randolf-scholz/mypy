@@ -111,7 +111,7 @@ class Child(Parent):
     def f(self) -> str: pass
     @cached_property
     def g(self) -> int: pass
-    @cached_property  # E: Too many positional arguments for property
+    @cached_property  # E: Too many arguments for property
     def h(self, arg) -> int: pass
 reveal_type(Parent().f)  # N: Revealed type is "builtins.str"
 reveal_type(Child().f)  # N: Revealed type is "builtins.str"

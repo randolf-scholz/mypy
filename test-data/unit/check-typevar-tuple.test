@@ -2221,7 +2221,7 @@ reveal_type(cb)  # N: Revealed type is "def (*builtins.int, **Unpack[TypedDict('
 cb2: Callable[[int, Unpack[Ints], int, Unpack[Keywords]], None]
 reveal_type(cb2)  # N: Revealed type is "def (builtins.int, *Unpack[tuple[Unpack[builtins.tuple[builtins.int, ...]], builtins.int]], **Unpack[TypedDict('__main__.Keywords', {'a': builtins.str, 'b': builtins.str})])"
 cb2(1, 2, 3, a="a", b="b")
-cb2(1, a="a", b="b")  # E: Too few arguments
+cb2(1, a="a", b="b")  # E: Too few arguments; star parameter expects at least 1 item(s)
 cb2(1, 2, 3, a="a")  # E: Missing named argument "b"
 
 bad1: Callable[[Unpack[Ints], Unpack[Ints]], None]  # E: More than one variadic Unpack in a type is not allowed

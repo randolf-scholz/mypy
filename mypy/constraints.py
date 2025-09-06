@@ -915,7 +915,7 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
 
     def visit_type_var_tuple(self, template: TypeVarTupleType) -> list[Constraint]:
         actual = self.actual
-        if isinstance(actual, TupleType):
+        if isinstance(actual, (TupleType, TypeVarTupleType)):
             return [Constraint(template, self.direction, actual)]
         if isinstance(actual, Instance) and actual.type.fullname == "builtins.tuple":
             return [Constraint(template, self.direction, actual)]
@@ -1656,32 +1656,32 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
                 actual_prefix_exhausted = actual_prefix_size <= template_prefix_size
                 actual_suffix_exhausted = actual_suffix_size <= template_suffix_size
 
-                if not template_prefix_exhausted and not template_suffix_exhausted:
+                if template_prefix_exhausted and template_suffix_exhausted:
                     if actual_prefix_exhausted and actual_suffix_exhausted:
                         # case 1a:
                         #    template: tuple[*Us]
                         #    actual:   tuple[*Vs]
+                        #       => *Us > *Vs
                         constraints += infer_constraints(
-                            template_unpack, actual_unpack, self.direction
+                            template_unpack.type, actual_unpack.type, self.direction
                         )
                     else:
                         # case 1b:
-                        #       template: tuple[P1, ..., Pk, *Us, S1, ..., Sm]
-                        #       actual:  tuple[*Vs]
-                        # Use actual_unpack_fallback here, since TVTs do not support slicing or indexing
-                        for t_item in template_prefix[actual_prefix_size:]:
-                            constraints += infer_constraints(
-                                t_item, actual_generic, self.direction
-                            )
-                        for t_item in template_suffix[actual_suffix_size:]:
-                            constraints += infer_constraints(
-                                t_item, actual_generic, self.direction
-                            )
+                        #       template: tuple[*Us]
+                        #       actual:  tuple[A1, ..., Ak, *Vs, B1, ..., Bl]
+                        # TODO: Use proper slicing helper function
+                        items = [
+                            *actual_prefix[template_prefix_size:],
+                            actual_unpack,
+                            *actual_suffix[: actual_suffix_size - template_suffix_size],
+                        ]
+                        remaining_actual = TupleType(items, fallback=actual_unpack_fallback)
                         constraints += infer_constraints(
-                            template_unpack, actual_unpack_fallback, self.direction
+                            template_unpack.type, remaining_actual, self.direction
                         )
 
                 elif template_prefix_exhausted and not template_suffix_exhausted:
+                    assert actual_suffix_exhausted
                     # case 2:
                     #       template: tuple[*Us, S1, ..., Sm]
                     #       actual:  tuple[A1, ..., Ak, *Vs]
@@ -1713,6 +1713,7 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
                         )
 
                 elif not template_prefix_exhausted and template_suffix_exhausted:
+                    assert actual_prefix_exhausted
                     # case 3:
                     #       template: tuple[P1, ..., Pk, *Us]
                     #       actual:  tuple[*Vs, B1, ..., Bl]
@@ -1745,20 +1746,24 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
                             template_unpack.type, remaining_actual, self.direction
                         )
 
-                elif template_prefix_exhausted and template_suffix_exhausted:
+                elif not template_prefix_exhausted and not template_suffix_exhausted:
+                    assert actual_prefix_exhausted and actual_suffix_exhausted
                     # case 4:
-                    #       template: tuple[*Us]
-                    #       actual:  tuple[A1, ..., Ak, *Vs, B1, ..., Bl]
-                    # TODO: Use proper slicing helper function
-                    items = [
-                        *actual_prefix[template_prefix_size:],
-                        actual_unpack,
-                        *actual_suffix[: actual_suffix_size - template_suffix_size],
-                    ]
-                    remaining_actual = TupleType(items, fallback=actual_unpack_fallback)
+                    #       template: tuple[P1, ..., Pk, *Us, S1, ..., Sm]
+                    #       actual:  tuple[*Vs]
+                    # Use actual_unpack_fallback here, since TVTs do not support slicing or indexing
+                    for t_item in template_prefix[actual_prefix_size:]:
+                        constraints += infer_constraints(
+                            t_item, actual_generic, self.direction
+                        )
+                    for t_item in template_suffix[actual_suffix_size:]:
+                        constraints += infer_constraints(
+                            t_item, actual_generic, self.direction
+                        )
                     constraints += infer_constraints(
-                        template_unpack.type, remaining_actual, self.direction
+                        template_unpack, actual_unpack_fallback, self.direction
                     )
+
                 else:
                     assert False
             else:

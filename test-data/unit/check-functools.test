@@ -532,8 +532,7 @@ reveal_type(first_kw(args=[1]))  # N: Revealed type is "builtins.int"
 
 # TODO: this is indeed invalid, but the error is incomprehensible.
 first_kw([1])  # E: Too many positional arguments for "get" \
-               # E: Too few arguments for "get" \
-               # E: Argument 1 to "get" has incompatible type "list[int]"; expected "int"
+               # E: Too few arguments for "get"
 [builtins fixtures/list.pyi]
 
 [case testFunctoolsPartialHigherOrder]

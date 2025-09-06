@@ -456,13 +456,14 @@ class _TupleConstructor:
         parsed_variadic_part = self.parse_variadic_type(tnf.variadic)
         show(tnf, parsed_variadic_part)
 
+        # check whether the unpack is considered empty
         unpacked = get_proper_type(parsed_variadic_part.type)
-
-        if isinstance(unpacked, TypeVarTupleType | ParamSpecType):
+        if isinstance(unpacked, (TypeVarTupleType, ParamSpecType)):
             is_empty = False
         elif isinstance(unpacked, TupleType):
             is_empty = not unpacked.proper_items
         elif self.context.is_tuple_instance_type(unpacked):
+            # we treat *tuple[Never, ...] as empty
             is_empty = isinstance(unpacked.args[0], UninhabitedType)
         else:
             raise TypeError(f"unexpected type {unpacked!r}")
@@ -474,9 +475,6 @@ class _TupleConstructor:
         return TupleType([*tnf.prefix, parsed_variadic_part, *tnf.suffix], self.context.tuple_type)
 
     def _materialize_variadic_concatenation(self, items: list[ProperType]) -> UnpackType:
-        if not items:
-            # return Unpack[tuple[()]]
-            return UnpackType(self.context.make_tuple_type([]))
         if len(items) == 1 and isinstance(unpack := items[0], UnpackType):
             # single unpack, just return it directly
             return unpack
@@ -489,6 +487,7 @@ class _TupleConstructor:
                 item_types.append(iterable_type.args[0])
             else:
                 item_types.append(item)
+        # Note: empty item_types gives tuple[Never, ...]
         unified_item_type = make_simplified_union(item_types)
         return UnpackType(self.context.make_tuple_instance_type(unified_item_type))
 

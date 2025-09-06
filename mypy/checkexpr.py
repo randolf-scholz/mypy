@@ -2422,10 +2422,9 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                 elif formal_kind == ARG_STAR:
                     # check if the star argument has a minimum size (e.g. *tuple[*tuple[int, ...], int])
                     star_param_type = TupleNormalForm.from_star_param(callee.arg_types[i])
-                    argname = callee.arg_names[i]
                     if star_param_type.minimum_length:
                         self.msg.too_few_arguments_for_star_arg(
-                            callee, context, argname, star_param_type.minimum_length
+                            callee, context, star_param_type.minimum_length
                         )
 
                 elif callee.param_spec() is not None and callee.special_sig != "partial":

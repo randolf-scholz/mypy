@@ -943,12 +943,12 @@ class MessageBuilder:
         )
 
     def too_few_arguments_for_star_arg(
-        self, callee: CallableType, context: Context, arg_name: str, number_expected
+        self, callee: CallableType, context: Context, number_expected
     ) -> None:
         if self.prefer_simple_messages():
             msg = "Too few arguments"
         else:
-            msg = f"Too few arguments for {for_function(callee)}; expected at least {number_expected} items for *{arg_name}"
+            msg = f"Too few arguments{for_function(callee)}; star parameter expects at least {number_expected} item(s)"
         self.fail(msg, context, code=codes.CALL_ARG)
 
     def too_few_arguments(

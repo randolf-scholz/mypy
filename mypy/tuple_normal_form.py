@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 from itertools import chain
-from typing import TYPE_CHECKING, NamedTuple, NewType, TypeGuard, TypeIs
+from typing import TYPE_CHECKING, NamedTuple, TypeIs
 from typing_extensions import NewType, TypeAlias as _TypeAlias, TypeGuard
 
 from mypy.typeops import make_simplified_union
@@ -345,7 +345,6 @@ class TupleNormalForm(NamedTuple):
         remaining_tail_items: list[list[ProperType]]
         remaining_body_items: list[list[ProperType]]
         target_head_items: list[ProperType] = []
-        target_body_items: list[ProperType] = []
         target_tail_items: list[ProperType] = []
 
         # split each tuple
@@ -431,7 +430,7 @@ class TupleNormalForm(NamedTuple):
         """
         helper = _TupleConstructor(context)
         result = helper.make_tuple_type(self)
-        show(f"Materializing TupleNormalForm\n\t{self}\n\t{result}")
+        show(f"Materialized TupleNormalForm\n\t{self}\n\t{result}")
         return result
 
 

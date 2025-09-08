@@ -2746,7 +2746,7 @@ class TupleType(ProperType):
 
     def __init__(
         self,
-        items: list[Type],
+        items: Sequence[Type],
         fallback: Instance,
         line: int = -1,
         column: int = -1,
@@ -2754,7 +2754,7 @@ class TupleType(ProperType):
     ) -> None:
         super().__init__(line, column)
         self.partial_fallback = fallback
-        self.items = items
+        self.items = list(items)
         self.implicit = implicit
 
     def can_be_true_default(self) -> bool:
@@ -2969,7 +2969,7 @@ class TupleType(ProperType):
         """
         proper_items = self.proper_items
         if len(proper_items) == 1 and isinstance(first := proper_items[0], UnpackType):
-            assert isinstance(first.type, TupleType | Instance | TypeVarType)
+            assert isinstance(first.type, (TupleType, Instance, TypeVarType, ParamSpecType))
             return first.type
         return self
 

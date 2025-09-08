@@ -855,9 +855,9 @@ def test_padded_tuple(padded_tuple: tuple[A, Unpack[Ts], A]) -> None:
 def test_padded_union_typevartuple(padded_union: Union[tuple[A, Unpack[Ts], A], tuple[None, None, None]]) -> None:
     # FIXME: https://github.com/python/mypy/issues/16720
     #   We should have list[A | None | Union[*Ts]] here, but we have list[Any]
-    reveal_type( (*padded_union,) )  # N: Revealed type is "tuple[Union[__main__.A, None], Unpack[builtins.tuple[Any], ...], Union[__main__.A, None]]"
-    reveal_type( [*padded_union] )   # N: Revealed type is "builtins.list[Any]"
-    reveal_type( {*padded_union} )   # N: Revealed type is "builtins.set[Any]"
+    reveal_type( (*padded_union,) )  # N: Revealed type is "tuple[Union[__main__.A, None], Unpack[builtins.tuple[Union[Any, None], ...]], Union[__main__.A, None]]"
+    reveal_type( [*padded_union] )   # N: Revealed type is "builtins.list[Union[__main__.A, None, Any]]"
+    reveal_type( {*padded_union} )   # N: Revealed type is "builtins.set[Union[__main__.A, None, Any]]"
 
 def test_padded_union_head(
     x: Union[tuple[None, A, A, *tuple[None, ...]], tuple[None, A, *tuple[None, ...]]],

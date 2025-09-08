@@ -286,7 +286,7 @@ class ArgTypeExpander:
         tnf = TupleNormalForm.from_star_arg(p_t)
         return tnf.materialize(self.context)
 
-    def parse_star_parameter(self, star_param: Type, /) -> FlatTuple | ParamSpecType | AnyType:
+    def parse_star_parameter(self, star_param: Type, /) -> TupleType:
         r"""Parse the type of a ``*args: T`` annotation into a tuple type.
 
         Note: For star arguments, use `parse_star_argument` instead.

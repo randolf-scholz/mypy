@@ -1189,7 +1189,7 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
         if (
             isinstance(actual, TupleType)
             and is_named_instance(template, TUPLE_LIKE_INSTANCE_NAMES)
-            and self.direction == SUPERTYPE_OF
+            # and self.direction == SUPERTYPE_OF
         ):
             # infer constraints for (template=tuple[T, ...]) :> (actual=tuple[T1, ..., Tn])
             # Note: tuple[T, ...] :> tuple[()] does not imply any constraints on T
@@ -1211,9 +1211,6 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
                         # tuple[T, ...] :> tuple[*Ts] implies T :> Union[*Ts]
                         # Since Union[*Ts] is currently not available, use Any instead.
                         item = AnyType(TypeOfAny.from_omitted_generics)
-                    elif isinstance(unpacked, TupleType):
-                        # tuple[T, ...] :> tuple[T1, ..., Tn] implies T :> Union[T1, ..., Tn]
-                        item = UnionType.make_union(unpacked.items, unpacked.line, unpacked.column)
                     elif (
                         isinstance(unpacked, Instance)
                         and unpacked.type.fullname == "builtins.tuple"
@@ -1222,9 +1219,11 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
                     else:
                         raise TypeError(f"Unexpected unpack type {unpacked}")
 
-                constraints += infer_constraints(generic_type, item, SUPERTYPE_OF)
+                constraints += infer_constraints(generic_type, item, self.direction)
             return constraints
-        elif isinstance(actual, TupleType) and self.direction == SUPERTYPE_OF:
+        elif isinstance(actual, TupleType):
+            # NOTE: tuple[T, ...] <: tuple[A, B, C] has no proper solution but we still infer T <: A, T <: B, T <: C
+            #   depending on context tuple[T, ...] may be treated as AnyOf[(), (T,), (T, T), ...]
             return infer_constraints(template, mypy.typeops.tuple_fallback(actual), self.direction)
         elif isinstance(actual, TypeVarType):
             if not actual.values and not actual.id.is_meta_var():
@@ -1453,13 +1452,22 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
     def visit_tuple_type(self, template: TupleType) -> list[Constraint]:
         # NOTE: Expects a normalized TupleType, i.e. one with at most one Unpack,
         #  and the Unpack should be flattened, i.e. only contain a TypeVarTuple or Tuple Instance.
+        from mypy.infer import TupleHelper, get_std_tuple_typeinfo
+
         actual = self.actual
+        original_actual = actual  # backup for error messages
 
-        is_varlength_tuple = (
-            isinstance(actual, Instance) and actual.type.fullname == "builtins.tuple"
-        )
+        std_tuple_typeinfo = get_std_tuple_typeinfo(
+            template
+        )  #  extract typeinfo of builtins.tuple
+        tuple_helper = TupleHelper(std_tuple_typeinfo)
 
-        if isinstance(actual, TupleType) or is_varlength_tuple:
+        if tuple_helper.is_tuple_instance_subtype(actual):
+            # reinterpret actual as tuple[*tuple[T, ...]]
+            as_tuple_instance = tuple_helper.as_tuple_instance_type(actual)
+            actual = TupleType([UnpackType(as_tuple_instance)], fallback=as_tuple_instance)
+
+        if isinstance(actual, TupleType):
             # Consider both tuples in Tuple Normal Form, i.e.
             # template: tuple[P1, ..., Pn, *Us?, S1, ..., Sm]
             # actual:   tuple[A1, ..., Ak, *Vs?, B1, ..., Bl]
@@ -1470,6 +1478,14 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
             # 4. neither template nor actual are variadic
             constraints: list[Constraint] = []
 
+            actual_prefix = actual.prefix
+            actual_suffix = actual.suffix
+            actual_unpack = actual.unpack
+            actual_prefix_size = len(actual_prefix)
+            actual_suffix_size = len(actual_suffix)
+            actual_size = actual_prefix_size + actual_suffix_size
+            actual_fallback = actual.partial_fallback
+
             template_prefix = template.prefix
             template_suffix = template.suffix
             template_unpack = template.unpack
@@ -1477,27 +1493,14 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
             template_suffix_size = len(template_suffix)
             template_size = template_prefix_size + template_suffix_size
 
-            if isinstance(actual, TupleType):
-                actual_prefix = actual.prefix
-                actual_suffix = actual.suffix
-                actual_unpack = actual.unpack
-                actual_fallback = actual.partial_fallback
-            elif is_varlength_tuple:
-                actual_prefix = []
-                actual_suffix = []
-                actual_unpack = UnpackType(actual)
-                actual_fallback = actual
-            else:
-                assert False
-
             # a tuple[T, ...] that can be used as a fallback for unpacked part
             actual_unpack_fallback: UnpackType | None
             # the generic type T of actual_unpack_fallback.
-            actual_generic: Type | None
+            actual_unpack_item_type: Type | None
 
             # determine the actual generic type for the unpacked part
             if actual_unpack is None:
-                actual_generic = None
+                actual_unpack_item_type = None
                 actual_unpack_fallback = None
             else:
                 actual_unpacked = get_proper_type(actual_unpack.type)
@@ -1506,20 +1509,22 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
                     # to indexed items of Vs, and Us to a slice of Vs. However, this functionality
                     # is not part of the type system.
                     # Therefore, instead we treat `Vs` as if it were `tuple[Any, ...]`.
-                    actual_generic = AnyType(TypeOfAny.from_omitted_generics)
+                    actual_unpack_item_type = AnyType(TypeOfAny.from_omitted_generics)
                     # use Unpack[tuple[Any, ...]] as a fallback for the unpacked part
                     actual_unpack_fallback = UnpackType(
-                        actual_unpacked.tuple_fallback.copy_modified(args=[actual_generic])
+                        actual_unpacked.tuple_fallback.copy_modified(
+                            args=[actual_unpack_item_type]
+                        )
                     )
                 elif isinstance(actual_unpacked, ParamSpecType):
-                    actual_generic = AnyType(TypeOfAny.from_omitted_generics)
+                    actual_unpack_item_type = AnyType(TypeOfAny.from_omitted_generics)
                     upper_bound = get_proper_type(actual_unpacked.upper_bound)
                     assert (
                         isinstance(upper_bound, Instance)
                         and upper_bound.type.fullname == "builtins.tuple"
                     )
                     actual_unpack_fallback = UnpackType(
-                        upper_bound.copy_modified(args=[actual_generic])
+                        upper_bound.copy_modified(args=[actual_unpack_item_type])
                     )
                 elif (
                     isinstance(actual_unpacked, Instance)
@@ -1527,13 +1532,9 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
                 ):
                     # If *Vs is a tuple, we can expand it out to a sequence of items.
                     actual_unpack_fallback = actual_unpack
-                    actual_generic = actual_unpacked.args[0]
+                    actual_unpack_item_type = actual_unpacked.args[0]
                 else:
                     raise NotImplementedError(f"Got unexpected unpack type {actual_unpacked}")
-
-            actual_prefix_size = len(actual_prefix)
-            actual_suffix_size = len(actual_suffix)
-            actual_size = actual_prefix_size + actual_suffix_size
 
             if actual_unpack is None and template_unpack is None:
                 # template: tuple[T1, ..., Tm]
@@ -1569,10 +1570,7 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
                     remaining_items = actual_prefix[
                         template_prefix_size : actual_size - template_suffix_size
                     ]
-                    # use a fake (but harmless?) fallback type, I don't know how to otherwise create this tuple type here.
-                    remaining_actual = TupleType(
-                        remaining_items, fallback=template.partial_fallback
-                    )
+                    remaining_actual = tuple_helper.make_tuple_type(remaining_items)
                     constraints += infer_constraints(
                         template_unpack.type, remaining_actual, self.direction
                     )
@@ -1582,8 +1580,14 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
                 # template: tuple[T1, ..., Tm]
                 # actual:  tuple[A1, ..., Ak, *Vs, B1, ..., Bl]
                 assert not template_suffix
-                assert actual_generic is not None
+                assert actual_unpack_item_type is not None
                 assert actual_unpack_fallback is not None
+
+                if self.direction == SUPERTYPE_OF:
+                    # fixed size tuple can't be a supertype of a variable length tuple
+                    return []
+
+                assert self.direction == SUBTYPE_OF
 
                 if template_size >= actual_size:
                     # match prefix items one-to-one
@@ -1600,14 +1604,16 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
                     for t_item in template_prefix[
                         actual_prefix_size : template_size - actual_suffix_size
                     ]:
-                        constraints += infer_constraints(t_item, actual_generic, self.direction)
+                        constraints += infer_constraints(
+                            t_item, actual_unpack_item_type, self.direction
+                        )
 
                 # otherwise, no constraints can be inferred since the tuples are incompatible.
                 # (actual as too many items)
             elif actual_unpack is not None and template_unpack is not None:
                 # template: tuple[P1, ..., Pk, *Us, S1, ..., Sm]
                 # actual:  tuple[A1, ..., Ak, *Vs, B1, ..., Bl]
-                assert actual_generic is not None
+                assert actual_unpack_item_type is not None
                 assert actual_unpack_fallback is not None
 
                 # match prefix items one-by-one until one of the tuples runs out
@@ -1675,7 +1681,7 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
                             actual_unpack,
                             *actual_suffix[: actual_suffix_size - template_suffix_size],
                         ]
-                        remaining_actual = TupleType(items, fallback=actual_unpack_fallback)
+                        remaining_actual = tuple_helper.make_tuple_type(items)
                         constraints += infer_constraints(
                             template_unpack.type, remaining_actual, self.direction
                         )
@@ -1691,7 +1697,9 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
                     # match S1, ..., Sm to *Vs
                     # Use actual_unpack_fallback here, since TVTs do not support slicing or indexing
                     for item in template_suffix[: template_suffix_size - actual_suffix_size]:
-                        constraints += infer_constraints(item, actual_generic, self.direction)
+                        constraints += infer_constraints(
+                            item, actual_unpack_item_type, self.direction
+                        )
 
                     if actual_prefix_exhausted:
                         # case 2a:
@@ -1705,8 +1713,8 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
                         # match *Us to [A1, ..., Ak, *Vs], using actual_unpack_fallback for *Vs
                         remaining_actual_prefix = actual_prefix[template_prefix_size:]
                         fallback = template.partial_fallback  # technically incorrect
-                        remaining_actual = TupleType(
-                            [*remaining_actual_prefix, actual_unpack_fallback], fallback=fallback
+                        remaining_actual = tuple_helper.make_tuple_type(
+                            [*remaining_actual_prefix, actual_unpack_fallback]
                         )
                         constraints += infer_constraints(
                             template_unpack.type, remaining_actual, self.direction
@@ -1723,7 +1731,9 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
                     # match P1, ..., Pk to *Vs
                     # Use actual_unpack_fallback here, since TVTs do not support slicing or indexing
                     for item in template_prefix[: template_prefix_size - actual_prefix_size]:
-                        constraints += infer_constraints(item, actual_generic, self.direction)
+                        constraints += infer_constraints(
+                            item, actual_unpack_item_type, self.direction
+                        )
 
                     if actual_suffix_exhausted:
                         # case 3a:
@@ -1738,9 +1748,8 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
                         remaining_actual_suffix = actual_suffix[
                             : actual_suffix_size - template_suffix_size
                         ]
-                        fallback = template.partial_fallback  # technically incorrect
-                        remaining_actual = TupleType(
-                            [actual_unpack_fallback, *remaining_actual_suffix], fallback=fallback
+                        remaining_actual = tuple_helper.make_tuple_type(
+                            [actual_unpack_fallback, *remaining_actual_suffix]
                         )
                         constraints += infer_constraints(
                             template_unpack.type, remaining_actual, self.direction
@@ -1754,14 +1763,14 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
                     # Use actual_unpack_fallback here, since TVTs do not support slicing or indexing
                     for t_item in template_prefix[actual_prefix_size:]:
                         constraints += infer_constraints(
-                            t_item, actual_generic, self.direction
+                            t_item, actual_unpack_item_type, self.direction
                         )
                     for t_item in template_suffix[actual_suffix_size:]:
                         constraints += infer_constraints(
-                            t_item, actual_generic, self.direction
+                            t_item, actual_unpack_item_type, self.direction
                         )
                     constraints += infer_constraints(
-                        template_unpack, actual_unpack_fallback, self.direction
+                        template_unpack.type, actual_unpack_fallback.type, self.direction
                     )
 
                 else:

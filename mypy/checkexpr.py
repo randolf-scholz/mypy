@@ -2752,7 +2752,8 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                         prefix_expected.append(expected_type)
                 else:
                     formal_prefix_index = 0
-                    formal_suffix_index = -1
+                    formal_suffix_index = 0
+                    formal_tuple_size = len(formal_tuple.proper_items)
                     formal_unpack_index = find_unpack_in_list(formal_tuple.proper_items)
                     # Now, check the arguments in order as described earlier.
                     # check prefix items
@@ -2782,21 +2783,23 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                     ):
                         if actual_kind == ARG_POS:
                             expected_type = mapper.context.get_tuple_item(
-                                formal_tuple, formal_suffix_index
+                                formal_tuple, -formal_suffix_index - 1
                             )
-                            formal_suffix_index -= 1
+                            formal_suffix_index += 1
                         elif actual_kind == ARG_STAR:
                             assert isinstance(expanded_actual, TupleType)
                             assert not expanded_actual.is_variadic
                             size = expanded_actual.minimum_length
+                            # TODO: make this indexing nicer...
+                            upper = None if formal_suffix_index == 0 else -formal_suffix_index - 1
+                            lower = -(formal_suffix_index + size) - 1
                             expected_type = mapper.context.get_tuple_slice(
-                                formal_tuple,
-                                slice(formal_suffix_index, formal_suffix_index - size, -1),
+                                formal_tuple, slice(lower, upper, 1)
                             )
                             expected_type = expected_type.copy_modified(
                                 items=list(reversed(expected_type.items))
                             )
-                            formal_suffix_index -= size
+                            formal_suffix_index += size
                         else:
                             assert False, f"Unexpected argument kind in suffix {actual_kind}"
 
@@ -2815,8 +2818,9 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                             assert isinstance(expanded_actual, TupleType)
                             prefix_size = len(expanded_actual.prefix)
                             suffix_size = len(expanded_actual.suffix)
+                            upper = None if formal_suffix_index == 0 else -formal_suffix_index - 1
                             expected_type = mapper.context.get_tuple_slice(
-                                formal_tuple, slice(formal_prefix_index, formal_suffix_index, 1)
+                                formal_tuple, slice(formal_prefix_index, upper, 1)
                             )
                             formal_prefix_index += prefix_size
                             formal_suffix_index -= suffix_size

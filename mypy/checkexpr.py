@@ -2692,16 +2692,21 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                 if not seen_variadic:
                     formal_prefix_index = 0
                     formal_suffix_index = 0
-                    formal_unpack_index = find_unpack_in_list(formal_tuple.proper_items)
                     # matching formal [P1, P2, ..., Pn, *Us, S1, S2, ..., Sm]
-                    # against  actual [T1, ..., Tk] without variadic part
-                    for actual, actual_kind, actual_type, expanded_actual in prefix_actuals:
+                    # against  actual [T1, ..., Tk]
+                    for i, (actual, actual_kind, actual_type, expanded_actual) in enumerate(
+                        prefix_actuals
+                    ):
+                        # TODO: HERE: fix selection.
                         if actual_kind == ARG_POS:
                             if formal_prefix_index < formal_prefix_length:
                                 expected_type = mapper.context.get_tuple_item(
                                     formal_tuple, formal_prefix_index
                                 )
                                 formal_prefix_index += 1
+
+                            # otherwise, formal_prefix is exhausted. compare with the unpack until only
+                            # suffix-many items are left.
                             elif formal_suffix_index < formal_suffix_length:
                                 # prefix is exhausted, take from the suffix
                                 expected_type = mapper.context.get_tuple_item(
@@ -2751,6 +2756,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
 
                         prefix_expected.append(expected_type)
                 else:
+                    pass
                     formal_prefix_index = 0
                     formal_suffix_index = 0
                     formal_tuple_size = len(formal_tuple.proper_items)

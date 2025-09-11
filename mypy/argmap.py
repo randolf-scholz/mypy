@@ -228,7 +228,7 @@ class ArgTypeExpander:
             # we are mapping an actual *args input to a *args formal argument.
             elif formal_kind == ARG_STAR:
                 # get the slice from the current index to the end of the tuple.
-                r = self.context.get_tuple_slice(star_args_type, slice(self.tuple_index, None, 1))
+                r = self.context.get_tuple_slice(star_args_type, self.tuple_index, None)
                 # r = star_args_type.slice(
                 #     self.tuple_index, None, None, fallback=self.context.tuple_type
                 # )

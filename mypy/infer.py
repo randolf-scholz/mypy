@@ -544,7 +544,9 @@ class ArgumentInferContext(NamedTuple):
             else:
                 pass
 
-    def get_tuple_slice(self, tup: TupleType, the_slice: slice) -> TupleType:
+    def get_tuple_slice(
+        self, tup: TupleType, start: int | None, stop: int | None, step: int = 1
+    ) -> TupleType:
         r"""Get a special slice from the tuple.
 
         If the tuple has no variadic part, this works like regular slicing.
@@ -578,7 +580,7 @@ class ArgumentInferContext(NamedTuple):
         unpack_index = find_unpack_in_list(proper_items)
 
         if unpack_index is None:
-            return TupleType(proper_items[the_slice], self.tuple_type)
+            return TupleType(proper_items[start:stop:step], self.tuple_type)
 
         variadic_part = proper_items[unpack_index]
         assert isinstance(variadic_part, UnpackType)
@@ -590,17 +592,9 @@ class ArgumentInferContext(NamedTuple):
         suffix_length = len(tup.suffix)
 
         # get the corrected start and stop indices
-        start = (
-            0
-            if the_slice.start is None
-            else max(min(-suffix_length, -1), min(the_slice.start, prefix_length))
-        )
-        stop = (
-            -1
-            if the_slice.stop is None
-            else max(min(-suffix_length, -1), min(the_slice.stop, prefix_length))
-        )
-        step = the_slice.step
+        start = 0 if start is None else max(min(-suffix_length, -1), min(start, prefix_length))
+        stop = -1 if stop is None else max(min(-suffix_length, -1), min(stop, prefix_length))
+        step = 1 if step is None else step
 
         if start >= 0 and stop >= 0:
             items = [

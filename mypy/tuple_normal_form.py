@@ -2,18 +2,22 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 from itertools import chain
-from typing import TYPE_CHECKING, NamedTuple, TypeIs
-from typing_extensions import NewType, TypeAlias as _TypeAlias, TypeGuard
+from typing import TYPE_CHECKING, NamedTuple, NewType, cast
+from typing_extensions import TypeAlias as _TypeAlias, TypeGuard, TypeIs
 
+from mypy.maptype import map_instance_to_supertype
+from mypy.nodes import TypeInfo
 from mypy.typeops import make_simplified_union
 from mypy.types import (
     AnyType,
     Instance,
+    ParamSpecFlavor,
     ParamSpecType,
     ProperType,
     TupleType,
     Type,
     TypeList,
+    TypeOfAny,
     TypeVarTupleType,
     UninhabitedType,
     UnionType,
@@ -23,7 +27,7 @@ from mypy.types import (
 )
 
 if TYPE_CHECKING:
-    from mypy.infer import ArgumentInferContext, TupleInstanceType
+    from mypy.infer import ArgumentInferContext
 
 
 def show(*args: object) -> None:
@@ -42,6 +46,260 @@ FiniteTuple = NewType("FiniteTuple", TupleType)
 TupleLikeType: _TypeAlias = "TupleType | TypeVarTupleType | TupleInstanceType | FiniteTuple"
 r"""Types that are considered tuples or tuple-like."""
 AbstractUnpackType = NewType("AbstractUnpackType", UnpackType)
+r"""An UnpackType that may contain unexpected members, such as TypeList or UnionType."""
+TupleInstanceType = NewType("TupleInstanceType", Instance)
+"""Represents an instance of `tuple[T, ...]`."""
+
+
+def get_std_tuple_typeinfo(typ: TupleType, /) -> TypeInfo:
+    """Extract the TypeInfo of 'builtins.tuple' from a TupleType."""
+    fallback = typ.partial_fallback
+    if fallback.type.fullname == "builtins.tuple":
+        return fallback.type
+
+    # this can happen when the fallback is a NamedTuple subclass
+    # in this case, we look for 'builtins.tuple' in the MRO
+    for base in fallback.type.mro:
+        if base.fullname == "builtins.tuple":
+            return base
+    raise RuntimeError("Could not find builtins.tuple in the MRO of the fallback type")
+
+
+class TupleHelper:
+    """Helper class for certain tuple operations."""
+
+    tuple_typeinfo: TypeInfo
+
+    def __init__(self, tuple_type: TypeInfo | TupleType | Instance) -> None:
+        if isinstance(tuple_type, Instance):
+            tuple_type = tuple_type.type
+
+        if isinstance(tuple_type, TupleType):
+            tuple_type = get_std_tuple_typeinfo(tuple_type)
+
+        if tuple_type.fullname != "builtins.tuple":
+            raise ValueError(f"Expected 'builtins.tuple' TypeInfo, got {tuple_type}")
+        self.tuple_typeinfo = tuple_type
+
+    @property
+    def std_tuple(self) -> Instance:
+        """return tuple[Any, ...]"""
+        return Instance(self.tuple_typeinfo, [AnyType(TypeOfAny.from_omitted_generics)])
+
+    def is_tuple_instance_type(self, typ: Type, /) -> TypeIs[TupleInstanceType]:
+        """Check if the type is a tuple instance, i.e. tuple[T, ...]."""
+        p_t = get_proper_type(typ)
+        return isinstance(p_t, Instance) and p_t.type == self.tuple_typeinfo
+
+    def is_tuple_instance_subtype(self, typ: Type) -> bool:
+        """Check if the type is a subtype of tuple[T, ...] for some T."""
+        from mypy.subtypes import is_subtype
+
+        if not isinstance(typ, Instance):
+            return False
+        if typ.type == self.tuple_typeinfo:
+            return True
+        # otherwise, check if it is a subtype of tuple[Any, ...]
+        return is_subtype(typ, self.std_tuple)
+
+    def as_tuple_instance_type(self, typ: Type, /) -> TupleInstanceType:
+        r"""Upcast a subtype of tuple[T, ...] to tuple[T, ...]."""
+        if not self.is_tuple_instance_subtype(typ):
+            raise ValueError(f"Type {typ} is not a subtype of tuple[T, ...]")
+        # TODO: does this always give the same result as the solver?
+        return map_instance_to_supertype(typ, self.tuple_typeinfo)
+
+    def make_tuple_instance_type(self, arg: Type, /) -> TupleInstanceType:
+        """Create a TupleInstance type with the given argument type."""
+        value = Instance(self.tuple_typeinfo, [arg])
+        return cast(TupleInstanceType, value)
+
+    def make_tuple_type(self, items: Sequence[Type], /) -> TupleType:
+        r"""Create a proper TupleType from the given item types."""
+        self._validate_items_for_tuple_type(items)
+        # make the fallback type
+        fallback = self._make_fallback_for_tuple_items(items)
+        return TupleType(items, fallback=fallback)
+
+    def _make_fallback_for_tuple_items(self, items: Sequence[Type]) -> Instance:
+        item_types = []
+        for item in flatten_nested_tuples(items):
+            if isinstance(item, UnpackType):
+                unpacked = get_proper_type(item.type)
+                if self.is_tuple_instance_type(unpacked):
+                    # unpacked is tuple[T, ...], return T
+                    item_types.append(unpacked.args[0])
+                elif isinstance(unpacked, TypeVarTupleType):
+                    # unpacked is a TypeVarTuple, return Any
+                    item_types.append(AnyType(TypeOfAny.from_omitted_generics))
+                elif isinstance(unpacked, ParamSpecType):
+                    assert (
+                        unpacked.flavor == ParamSpecFlavor.ARGS
+                    ), f"items={items}, {unpacked.flavor=}"
+                    item_types.append(AnyType(TypeOfAny.from_omitted_generics))
+                else:
+                    assert False, f"Unexpected unpacked type: {unpacked}"
+            else:
+                item_types.append(item)
+
+        combined_item_type = make_simplified_union(item_types)
+        return self.make_tuple_instance_type(combined_item_type)
+
+    def _validate_items_for_tuple_type(self, items: Sequence[Type]) -> None:
+        """Validate that the items are valid for a TupleType."""
+        seen_unpack = 0
+        for item in flatten_nested_tuples(items):
+            if isinstance(item, UnpackType):
+                seen_unpack += 1
+                unpacked = get_proper_type(item.type)
+                if not (
+                    self.is_tuple_instance_type(unpacked)
+                    or isinstance(unpacked, (TypeVarTupleType, ParamSpecType))
+                ):
+                    raise ValueError(
+                        f"UnpackType must contain tuple[T, ...] or TypeVarTuple, got {unpacked}"
+                    )
+        if seen_unpack > 1:
+            raise ValueError("TupleType can only have one UnpackType")
+
+    def _get_variadic_item_type(self, tup: TupleType, /) -> Type | None:
+        """Get the type of the variadic part of a tuple, or None if there is no variadic part."""
+        unpack_index = tup.unpack_index
+        if unpack_index is None:
+            return None
+
+        item = tup.proper_items[unpack_index]
+        assert isinstance(item, UnpackType)
+
+        return self._get_variadic_item_type_from_unpack(item)
+
+    def _get_variadic_item_type_from_unpack(self, unpack: UnpackType, /) -> Type:
+        """Get the type of the variadic part from an UnpackType."""
+        unpacked = get_proper_type(unpack.type)
+        if self.is_tuple_instance_type(unpacked):
+            # unpacked is tuple[T, ...], return T
+            return unpacked.args[0]
+        elif isinstance(unpacked, TypeVarTupleType):
+            # unpacked is a TypeVarTuple, return Any
+            return AnyType(TypeOfAny.from_omitted_generics)
+        elif isinstance(unpacked, ParamSpecType):
+            # need for some specific cases like
+            return unpack
+        else:
+            assert False, f"Unexpected unpacked type: {unpacked}"
+
+    def get_item(self, tup: TupleType, index: int) -> Type | None:
+        r"""Get the type of indexing the tuple.
+
+        Assuming the tuple type is in Tuple Normal Form, then the result is:
+
+        tuple[P1, ..., Pn, *Vs, S1, ..., Sm] @ index =
+            Iterable_type[Vs]  if index < -m
+            S[index]           if -m ≤ index < 0
+            P[index]           if 0 ≤ index < n
+            Iterable_type[Vs]  if index ≥ n
+
+        If the tuple has no variadic part, then it works just like regular indexing,
+        but returns None if the index is out of bounds.
+        """
+        proper_items = tup.proper_items
+        unpack_index = tup.unpack_index
+
+        if unpack_index is None:
+            try:
+                return proper_items[index]
+            except IndexError:
+                return None
+
+        N = len(proper_items)
+        if unpack_index - N < index < unpack_index:
+            return proper_items[index]
+
+        item = proper_items[unpack_index]
+        assert isinstance(item, UnpackType)
+        return self._get_variadic_item_type_from_unpack(item)
+
+    def get_slice(
+        self, tup: TupleType, start: int | None, stop: int | None, step: int = 1
+    ) -> TupleType:
+        r"""Get a special slice from the tuple.
+
+        If the tuple has no variadic part, this works like regular slicing.
+        However, if the tuple has a variadic part, then, depending on the indices,
+        this does something special:
+
+        1. If both start and stop are same signed integers (both non-negative or both negative),
+           then we slice as if the variadic part as expanded into an infinite sequence
+           of items, whose type we get by casting the unpack type to Iterable[T] and taking T.
+           This supports step values other than 1 or -1.
+        2. In all other cases,
+        It is assumed the tuple is in Tuple Normal Form.
+
+        t = tuple[P1, ..., Pn, *Vs, S1, ..., Sm]
+
+        Depending on the sign of start, the starting point is determined as follows:
+           If start ≥ 0, then start = min(start, n)
+           If start < 0, then start = max(start, -m)
+        which corresponds to taking items from the prefix if start is non-negative,
+        and from the suffix if start is negative, but never going beyond the variadic part.
+
+        slices that 'traverse' the variadic part always include the entire variadic part,
+        irrespective of the step size.
+
+        The slice is constructed as follows:
+        - if both start and stop are within the prefix or both within the suffix,
+          just do regular slicing
+        - If they traverse the variadic part, create two slices and glue them with the variadic part in between.
+        """
+        proper_items = tup.proper_items
+        unpack_index = tup.unpack_index
+
+        if unpack_index is None:
+            return self.make_tuple_type(proper_items[start:stop:step])
+
+        variadic_part = proper_items[unpack_index]
+        assert isinstance(variadic_part, UnpackType)
+        iterable_type = self._get_variadic_item_type_from_unpack(variadic_part)
+
+        N = len(proper_items)
+        prefix_length = len(tup.prefix)
+        suffix_length = len(tup.suffix)
+
+        # clip start and stop to the valid range [-suffix_length, +prefix_length]
+        clip = lambda x: max(min(-suffix_length, -1), min(x, prefix_length))
+        start = None if start is None else clip(start)
+        stop = None if stop is None else clip(stop)
+        step = 1 if step is None else step
+
+        if (start is None and start >= 0) and (stop is not None and stop >= 0):
+            start = 0 if start is None else start
+            items = [
+                proper_items[i] if i < prefix_length else iterable_type
+                for i in range(start, stop, step)
+            ]
+        elif (start is None or start >= 0) and (stop is None or stop < 0) and step == 1:
+            items = [
+                *proper_items[start:unpack_index:step],
+                variadic_part,
+                *proper_items[unpack_index + 1 : stop : step],
+            ]
+        elif (start is None or start < 0) and (stop is None or stop >= 0) and step == -1:
+            items = [
+                *proper_items[start : unpack_index + 1 : step],
+                variadic_part,
+                *proper_items[unpack_index - 1 : stop : step],
+            ]
+        elif (start is not None and start < 0) and (stop is None or stop < 0):
+            stop = 0 if stop is None else stop
+            items = [
+                proper_items[i] if i >= -suffix_length else iterable_type
+                for i in range(start, stop, step)
+            ]
+        else:
+            # empty slice
+            items = []
+
+        return self.make_tuple_type(items)
 
 
 def _is_empty_unpack(typ: Type, /) -> TypeGuard[UnpackType]:

@@ -126,7 +126,7 @@ from mypy.subtypes import (
     non_method_protocol_members,
 )
 from mypy.traverser import has_await_expression
-from mypy.tuple_normal_form import TupleNormalForm
+from mypy.tuple_normal_form import TupleHelper, TupleNormalForm
 from mypy.typeanal import (
     check_for_explicit_any,
     fix_instance,
@@ -1754,17 +1754,17 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                     continue
                 arg_type = get_proper_type(self.accept(arg))
                 if isinstance(arg_type, TupleType):
-                    seen_unpack += sum(isinstance(t, UnpackType) for t in arg_type.proper_items)
+                    seen_unpack += arg_type.unpack_index is not None
                 else:
                     seen_unpack += 1
 
-                if seen_unpack > 1:
-                    self.msg.fail(
-                        "Passing multiple variadic unpacks in a call is not supported",
-                        context,
-                        code=codes.CALL_ARG,
-                    )
-                    return AnyType(TypeOfAny.from_error), callee
+            if seen_unpack > 1:
+                self.msg.fail(
+                    "Passing multiple variadic unpacks in a call is not supported",
+                    context,
+                    code=codes.CALL_ARG,
+                )
+                return AnyType(TypeOfAny.from_error), callee
 
         # This is tricky: return type may contain its own type variables, like in
         # def [S] (S) -> def [T] (T) -> tuple[S, T], so we need to update their ids
@@ -2622,6 +2622,8 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                     )
 
             elif formal_kind == ARG_STAR:
+                tuple_helper = TupleHelper(self.argument_infer_context().tuple_type)
+
                 assert len(actuals) >= 1
                 actual_types = [arg_types[a] for a in actuals]
                 actual_kinds = [arg_kinds[a] for a in actuals]
@@ -2692,7 +2694,9 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                     if actual_kind == ARG_POS:
                         actual_size = 1
                     elif actual_kind == ARG_STAR:
-                        assert isinstance(expanded_actual, TupleType)
+                        assert isinstance(
+                            expanded_actual, TupleType
+                        ), f"expected tuple, got {expanded_actual}"
                         actual_size = expanded_actual.minimum_length
                     else:
                         assert False, f"Unexpected argument kind in *args {actual_kind}"
@@ -2729,9 +2733,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                     actual = actual_queue.popleft()
 
                     if actual.actual_kind == ARG_POS:
-                        expected_type = mapper.context.get_tuple_item(
-                            formal_tuple, formal_prefix_index
-                        )
+                        expected_type = tuple_helper.get_item(formal_tuple, formal_prefix_index)
                         formal_prefix_index += 1
                         expected_prefix_types.append(expected_type)
 
@@ -2742,12 +2744,12 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                         size = actual.expanded_type.minimum_length
                         if (
                             actual.expanded_type.is_variadic
-                            or formal_prefix_index + size >= formal_prefix_length
+                            or formal_prefix_index + size > formal_prefix_length
                         ):
                             actual_queue.appendleft(actual)
                             break
                         # otherwise, determine the expected type and append it.
-                        expected_type = mapper.context.get_tuple_slice(
+                        expected_type = tuple_helper.get_slice(
                             formal_tuple,
                             start=formal_prefix_index,
                             stop=formal_prefix_index + size,
@@ -2764,7 +2766,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                     actual = actual_queue.pop()
 
                     if actual.actual_kind == ARG_POS:
-                        expected_type = mapper.context.get_tuple_item(
+                        expected_type = tuple_helper.get_item(
                             formal_tuple, -formal_suffix_index - 1
                         )
                         formal_suffix_index += 1
@@ -2777,16 +2779,16 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                         size = actual.expanded_type.minimum_length
                         if (
                             actual.expanded_type.is_variadic
-                            or formal_suffix_index + size >= formal_suffix_length
+                            or formal_suffix_index + size > formal_suffix_length
                         ):
                             actual_queue.append(actual)
                             break
                         # otherwise, we can consume it
-                        expected_type = mapper.context.get_tuple_slice(
+                        expected_type = tuple_helper.get_slice(
                             formal_tuple,
                             start=-formal_suffix_index - size,
                             # since negative integer zero is not a thing we need to use None in this case.
-                            stop=None if formal_suffix_index == 0 else -formal_suffix_index - 1,
+                            stop=None if formal_suffix_index == 0 else -formal_suffix_index,
                         )
                         formal_suffix_index += size
                         expected_suffix_types.appendleft(expected_type)
@@ -2799,9 +2801,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                     actual = actual_queue.popleft()
 
                     if actual.actual_kind == ARG_POS:
-                        expected_type = mapper.context.get_tuple_item(
-                            formal_tuple, formal_prefix_index
-                        )
+                        expected_type = tuple_helper.get_item(formal_tuple, formal_prefix_index)
                         expected_middle_types.append(expected_type)
                         formal_prefix_index += 1
 
@@ -2809,13 +2809,13 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                         assert isinstance(actual.expanded_type, TupleType)
                         prefix_size = len(actual.expanded_type.prefix)
                         suffix_size = len(actual.expanded_type.suffix)
-                        expected_type = mapper.context.get_tuple_slice(
+                        expected_type = tuple_helper.get_slice(
                             formal_tuple,
                             start=formal_prefix_index,
-                            stop=None if formal_suffix_index == 0 else -formal_suffix_index - 1,
+                            stop=None if formal_suffix_index == 0 else -formal_suffix_index,
                         )
                         formal_prefix_index += prefix_size
-                        formal_suffix_index -= suffix_size
+                        formal_suffix_index += suffix_size
                         expected_middle_types.append(expected_type)
 
                     else:
@@ -2884,7 +2884,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                             if formal_prefix_index >= formal_prefix_length:
                                 break
                             if actual_kind == ARG_POS:
-                                expected_type = mapper.context.get_tuple_item(
+                                expected_type = tuple_helper.get_item(
                                     formal_tuple, formal_prefix_index
                                 )
                                 formal_prefix_index += 1
@@ -2906,7 +2906,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                             # TODO: HERE: fix selection.
                             if actual_kind == ARG_POS:
                                 if formal_prefix_index < formal_prefix_length:
-                                    expected_type = mapper.context.get_tuple_item(
+                                    expected_type = tuple_helper.get_item(
                                         formal_tuple, formal_prefix_index
                                     )
                                     formal_prefix_index += 1
@@ -2915,13 +2915,13 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                                 # suffix-many items are left.
                                 elif formal_suffix_index < formal_suffix_length:
                                     # prefix is exhausted, take from the suffix
-                                    expected_type = mapper.context.get_tuple_item(
+                                    expected_type = tuple_helper.get_item(
                                         formal_tuple, -formal_suffix_index - 1
                                     )
                                     formal_suffix_index -= 1
                                 else:
                                     # both formal prefix and suffix are exhausted, take from the unpacked part
-                                    expected_type = mapper.context.get_tuple_item(
+                                    expected_type = tuple_helper.get_item(
                                         formal_tuple, formal_unpack_index
                                     )
                             elif actual_kind == ARG_STAR:
@@ -2934,21 +2934,21 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                                 while size:
                                     if formal_prefix_index < formal_prefix_length:
                                         expected_items.append(
-                                            mapper.context.get_tuple_item(
+                                            tuple_helper.get_item(
                                                 formal_tuple, formal_prefix_index
                                             )
                                         )
                                         formal_prefix_index += 1
                                     elif formal_suffix_index < formal_suffix_length:
                                         expected_items.append(
-                                            mapper.context.get_tuple_item(
+                                            tuple_helper.get_item(
                                                 formal_tuple, -formal_suffix_index - 1
                                             )
                                         )
                                         formal_suffix_index -= 1
                                     else:
                                         expected_items.append(
-                                            mapper.context.get_tuple_item(
+                                            tuple_helper.get_item(
                                                 formal_tuple, formal_unpack_index
                                             )
                                         )
@@ -2971,7 +2971,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                         # check prefix items
                         for actual, actual_kind, actual_type, expanded_actual in prefix_actuals:
                             if actual_kind == ARG_POS:
-                                expected_type = mapper.context.get_tuple_item(
+                                expected_type = tuple_helper.get_item(
                                     formal_tuple, formal_prefix_index
                                 )
                                 formal_prefix_index += 1
@@ -2979,7 +2979,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                                 assert isinstance(expanded_actual, TupleType)
                                 assert not expanded_actual.is_variadic
                                 size = expanded_actual.minimum_length
-                                expected_type = mapper.context.get_tuple_slice(
+                                expected_type = tuple_helper.get_slice(
                                     formal_tuple, formal_prefix_index, formal_prefix_index + size
                                 )
                                 formal_prefix_index += size
@@ -2993,7 +2993,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                             suffix_actuals
                         ):
                             if actual_kind == ARG_POS:
-                                expected_type = mapper.context.get_tuple_item(
+                                expected_type = tuple_helper.get_item(
                                     formal_tuple, -formal_suffix_index - 1
                                 )
                                 formal_suffix_index += 1
@@ -3006,9 +3006,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                                     None if formal_suffix_index == 0 else -formal_suffix_index - 1
                                 )
                                 lower = -(formal_suffix_index + size) - 1
-                                expected_type = mapper.context.get_tuple_slice(
-                                    formal_tuple, lower, upper
-                                )
+                                expected_type = tuple_helper.get_slice(formal_tuple, lower, upper)
                                 expected_type = expected_type.copy_modified(
                                     items=list(reversed(expected_type.items))
                                 )
@@ -3023,7 +3021,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                             if actual_kind == ARG_POS:
                                 # any ARG_POS we see here was sandwiched between two ARG_STAR
                                 # so it only ever can map to the unpacked part of the formal tuple
-                                expected_type = mapper.context.get_tuple_item(
+                                expected_type = tuple_helper.get_item(
                                     formal_tuple, formal_unpack_index
                                 )
                                 # we do not increment the index here, since we are still in the variadic part
@@ -3034,7 +3032,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                                 upper = (
                                     None if formal_suffix_index == 0 else -formal_suffix_index - 1
                                 )
-                                expected_type = mapper.context.get_tuple_slice(
+                                expected_type = tuple_helper.get_slice(
                                     formal_tuple, formal_prefix_index, upper
                                 )
                                 formal_prefix_index += prefix_size

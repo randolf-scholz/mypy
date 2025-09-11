@@ -1735,7 +1735,9 @@ def test(
 
 
 [case testStarArgsWithSuffix]
-def f(*args: tuple[*tuple[str, ...], int, int, int]) -> None: pass
+from typing import Unpack
+
+def f(*args: Unpack[tuple[Unpack[tuple[str, ...], int, int, int]]]) -> None: pass
 
 def test(x: tuple[str, ...], y: tuple[int, int, int], z: int) -> None:
     f(*x, z, z, z)
@@ -1746,14 +1748,15 @@ def test(x: tuple[str, ...], y: tuple[int, int, int], z: int) -> None:
 
 
 [case testStarArgsWithPrefixAndSuffix]
+from typing import Unpack
 
 class P: ...
 class V: ...
 class S: ...
 
 def f(
-    a1: P, a2: P, /,                      # prefix
-    *args: *tuple[*tuple[V, ...], S, S],  # unbounded + suffix
+    a1: P, a2: P, /,                                    # prefix
+    *args: Unpack[tuple[Unpack[tuple[V, ...]], S, S]],  # unbounded + suffix
 ) -> None: pass
 
 def test_good_cases1(

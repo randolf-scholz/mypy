@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Callable
 from mypy import nodes
 from mypy.maptype import map_instance_to_supertype
 from mypy.nodes import ARG_NAMED, ARG_NAMED_OPT, ARG_OPT, ARG_POS, ARG_STAR, ARG_STAR2
-from mypy.tuple_normal_form import FlatTuple, TupleNormalForm
+from mypy.tuple_normal_form import FlatTuple, TupleHelper, TupleNormalForm
 from mypy.types import (
     AnyType,
     Instance,
@@ -197,6 +197,7 @@ class ArgTypeExpander:
                 assert False, f"unexpected formal kind {formal_kind} for positional actual"
 
         elif actual_kind == ARG_STAR:
+            tuple_helper = TupleHelper(self.context.tuple_type)
             # parse *args as one of the following:
             #    TupleType | ParamSpecType | AnyType
             # Then, depending on the formal type, return a tuple-like type or an item from the tuple.
@@ -211,7 +212,7 @@ class ArgTypeExpander:
 
             # we are mapping an actual *args to positional arguments.
             if formal_kind in (ARG_POS, ARG_OPT):
-                value = self.context.get_tuple_item(star_args_type, self.tuple_index)
+                value = tuple_helper.get_item(star_args_type, self.tuple_index)
                 self.tuple_index += 1
 
                 # None value indicates out-of-bounds access. This should never
@@ -228,7 +229,7 @@ class ArgTypeExpander:
             # we are mapping an actual *args input to a *args formal argument.
             elif formal_kind == ARG_STAR:
                 # get the slice from the current index to the end of the tuple.
-                r = self.context.get_tuple_slice(star_args_type, self.tuple_index, None)
+                r = tuple_helper.get_slice(star_args_type, self.tuple_index, None)
                 # r = star_args_type.slice(
                 #     self.tuple_index, None, None, fallback=self.context.tuple_type
                 # )

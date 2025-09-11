@@ -1452,7 +1452,7 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
     def visit_tuple_type(self, template: TupleType) -> list[Constraint]:
         # NOTE: Expects a normalized TupleType, i.e. one with at most one Unpack,
         #  and the Unpack should be flattened, i.e. only contain a TypeVarTuple or Tuple Instance.
-        from mypy.infer import TupleHelper, get_std_tuple_typeinfo
+        from mypy.tuple_normal_form import TupleHelper, get_std_tuple_typeinfo
 
         actual = self.actual
         original_actual = actual  # backup for error messages

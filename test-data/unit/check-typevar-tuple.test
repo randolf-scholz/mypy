@@ -1676,7 +1676,7 @@ reveal_type(x2)  # N: Revealed type is "tuple[builtins.int, Unpack[builtins.tupl
 y2 = 1, *b, 2
 reveal_type(y2)  # N: Revealed type is "tuple[builtins.int, builtins.int, Unpack[builtins.tuple[builtins.float, ...]], builtins.str, builtins.int]"
 z2 = (*b, *b)
-reveal_type(z2)  # N: Revealed type is "builtins.tuple[builtins.object, ...]"
+reveal_type(z2)  # N: Revealed type is "builtins.tuple[Union[builtins.float, builtins.str, builtins.int], ...]"
 [builtins fixtures/tuple.pyi]
 
 [case testVariadicTupleInListSetExpr]
@@ -1724,7 +1724,7 @@ Ts = TypeVarTuple("Ts")
 def foo(arg: Tuple[int, Unpack[Ts], str]) -> None:
     reveal_type(arg + (1, 2))  # N: Revealed type is "tuple[builtins.int, Unpack[Ts`-1], builtins.str, Literal[1]?, Literal[2]?]"
     reveal_type((1, 2) + arg)  # N: Revealed type is "tuple[Literal[1]?, Literal[2]?, builtins.int, Unpack[Ts`-1], builtins.str]"
-    reveal_type(arg + arg)  # N: Revealed type is "builtins.tuple[builtins.object, ...]"
+    reveal_type(arg + arg)  # N: Revealed type is "builtins.tuple[Union[builtins.int, Any, builtins.str], ...]"
 [builtins fixtures/tuple.pyi]
 
 [case testTypeVarTupleAnyOverload]

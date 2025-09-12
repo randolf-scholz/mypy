@@ -2496,10 +2496,11 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                         self.msg.too_many_positional_arguments(callee, context)
 
                 elif kind == ARG_STAR2:
-                    # Accept all types for double-starred arguments, because they could be empty
-                    # dictionaries and we can't tell it from their types
-                    pass
-
+                    kwargs_type = get_proper_type(actual_types[i])
+                    if isinstance(kwargs_type, TypedDictType) and kwargs_type.items:
+                        ok = False
+                        self.msg.too_many_arguments_from_typed_dict(callee, kwargs_type, context)
+                        is_unexpected_arg_error = True
                 else:
                     assert False, f"Unexpected argument kind {kind}"
 
@@ -2517,6 +2518,8 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                     # TODO: cover the case when ARG_STAR exists but is not variadic.
 
                 elif kind == ARG_STAR2:
+                    # *args/**kwargs can be applied even if the function takes a fixed
+                    # number of positional arguments. This may succeed at runtime.
                     kwargs_type = get_proper_type(actual_types[i])
                     if isinstance(kwargs_type, TypedDictType) and (
                         all_actuals[i] < len(kwargs_type.items)
@@ -2526,7 +2529,8 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                         ok = False
                         self.msg.too_many_arguments_from_typed_dict(callee, kwargs_type, context)
                         is_unexpected_arg_error = True
-
+                    # Accept all types for double-starred arguments, because they could be empty
+                    # dictionaries and we can't tell it from their types
         return ok, is_unexpected_arg_error
 
     def missing_classvar_callable_note(
@@ -2579,12 +2583,13 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
         # https://github.com/python/mypy/issues/19692#issuecomment-3211743894
         _validate_arg_kinds(arg_kinds)
 
-        formal_to_actual = _use_only_first_valid_arg(formal_to_actual, callee.arg_kinds)
-        _validate_formal_to_actual(formal_to_actual, arg_kinds, callee.arg_kinds)
+        # formal_to_actual = _use_only_first_valid_arg(formal_to_actual, callee.arg_kinds)
+        # _validate_formal_to_actual(formal_to_actual, arg_kinds, callee.arg_kinds)
 
         for i, actuals in enumerate(formal_to_actual):
             formal_kind = callee.arg_kinds[i]
             formal_type = callee.arg_types[i]
+            formal_name = callee.arg_names[i]
 
             # sanity check actual length
             if not actuals:
@@ -2602,7 +2607,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
 
                 for actual, actual_type, actual_kind in zip(actuals, actual_types, actual_kinds):
                     expanded_actual = mapper.expand_actual_type(
-                        actual_type, actual_kind, None, formal_kind
+                        actual_type, actual_kind, formal_name, formal_kind
                     )
                     check_arg(
                         expanded_actual,

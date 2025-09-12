@@ -14,12 +14,7 @@ from typing_extensions import TypeAlias as _TypeAlias, assert_never
 import mypy.checker
 import mypy.errorcodes as codes
 from mypy import applytype, erasetype, join, message_registry, nodes, operators, types
-from mypy.argmap import (
-    ArgTypeExpander,
-    map_actuals_to_formals,
-    map_formals_to_actuals,
-    parse_star_args_type,
-)
+from mypy.argmap import ArgTypeExpander, map_actuals_to_formals, map_formals_to_actuals
 from mypy.checker_shared import ExpressionCheckerSharedApi
 from mypy.checkmember import analyze_member_access, has_operator
 from mypy.checkstrformat import StringFormatterChecker
@@ -2426,9 +2421,10 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                     # check if the star argument has a minimum size (e.g. *tuple[*tuple[int, ...], int])
                     star_param_type = TupleNormalForm.from_star_param(callee.arg_types[i])
                     if star_param_type.minimum_length:
-                        self.msg.too_few_arguments_for_star_arg(
-                            callee, context, star_param_type.minimum_length
-                        )
+                        #     self.msg.too_few_arguments_for_star_arg(
+                        #         callee, context, star_param_type.minimum_length
+                        #     )
+                        self.msg.too_few_arguments(callee, context, actual_names)
             else:
                 if callee.param_spec() is not None and len(actuals) > 1:
                     paramspec_entries = sum(
@@ -2714,7 +2710,6 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                     else:
                         prefix_actuals.append(item)
 
-                total_size = sum(r.actual_size for r in parsed_actuals)
                 # create a deque of the parsed actuals
                 from collections import deque
 
@@ -5898,41 +5893,42 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                     ctx = ctx_item.type
                 else:
                     ctx = None
+
+                # parse the star argument into a tuple type
                 original_arg_type = self.accept(item.expr, ctx)
-                # convert arg type to one of TupleType, TupleInstanceType, AnyType
-                star_args_type = parse_star_args_type(
-                    original_arg_type, self.argument_infer_context()
-                )
-                if isinstance(star_args_type, TupleType):
-                    if find_unpack_in_list(star_args_type.items) is not None:
-                        if seen_unpack_in_items:
-                            # Multiple unpack items are not allowed in tuples,
-                            # fall back to instance type.
-                            return self.check_lst_expr(e, "builtins.tuple", "<tuple>")
-                        else:
-                            seen_unpack_in_items = True
-                    items.extend(star_args_type.items)
-                    # Note: this logic depends on full structure match in tuple_context_matches().
-                    if unpack_in_context:
-                        j += 1
-                    else:
-                        # If there is an unpack in expressions, but not in context, this will
-                        # result in an error later, just do something predictable here.
-                        j += len(star_args_type.items)
+                mapper = ArgTypeExpander(self.argument_infer_context())
+                star_args_type = mapper.parse_star_argument(original_arg_type)
+
+                # if isinstance(star_args_type, TupleType):
+                # if find_unpack_in_list(star_args_type.items) is not None:
+                #     if seen_unpack_in_items:
+                #         # Multiple unpack items are not allowed in tuples,
+                #         # fall back to instance type.
+                #         return self.check_lst_expr(e, "builtins.tuple", "<tuple>")
+                #     else:
+                #         seen_unpack_in_items = True
+                items.extend(star_args_type.items)
+                # Note: this logic depends on full structure match in tuple_context_matches().
+                if unpack_in_context:
+                    j += 1
                 else:
-                    if allow_precise_tuples and not seen_unpack_in_items:
-                        # Handle (x, *y, z), where y is e.g. tuple[Y, ...].
-                        if isinstance(star_args_type, Instance) and self.chk.type_is_iterable(
-                            star_args_type
-                        ):
-                            item_type = self.chk.iterable_item_type(star_args_type, e)
-                            mapped = self.chk.named_generic_type("builtins.tuple", [item_type])
-                            items.append(UnpackType(mapped))
-                            seen_unpack_in_items = True
-                            continue
-                    # A star expression that's not a Tuple.
-                    # Treat the whole thing as a variable-length tuple.
-                    return self.check_lst_expr(e, "builtins.tuple", "<tuple>")
+                    # If there is an unpack in expressions, but not in context, this will
+                    # result in an error later, just do something predictable here.
+                    j += len(star_args_type.items)
+                # else:
+                #     if allow_precise_tuples and not seen_unpack_in_items:
+                #         # Handle (x, *y, z), where y is e.g. tuple[Y, ...].
+                #         if isinstance(star_args_type, Instance) and self.chk.type_is_iterable(
+                #             star_args_type
+                #         ):
+                #             item_type = self.chk.iterable_item_type(star_args_type, e)
+                #             mapped = self.chk.named_generic_type("builtins.tuple", [item_type])
+                #             items.append(UnpackType(mapped))
+                #             seen_unpack_in_items = True
+                #             continue
+                #     # A star expression that's not a Tuple.
+                #     # Treat the whole thing as a variable-length tuple.
+                #     return self.check_lst_expr(e, "builtins.tuple", "<tuple>")
             else:
                 if not type_context_items or j >= len(type_context_items):
                     tt = self.accept(item)
@@ -5940,11 +5936,15 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                     tt = self.accept(item, type_context_items[j])
                     j += 1
                 items.append(tt)
+
+        # renormalize the items, combining multiple unpacks if needed.
+        tnf = TupleNormalForm.from_items(items)
+        result = tnf.materialize(context=self.argument_infer_context()).simplify()
         # This is a partial fallback item type. A precise type will be calculated on demand.
-        fallback_item = AnyType(TypeOfAny.special_form)
-        result: ProperType = TupleType(
-            items, self.chk.named_generic_type("builtins.tuple", [fallback_item])
-        )
+        # fallback_item = AnyType(TypeOfAny.special_form)
+        # result: ProperType = TupleType(
+        #     items, self.chk.named_generic_type("builtins.tuple", [fallback_item])
+        # )
         if seen_unpack_in_items:
             # Return already normalized tuple type just in case.
             result = expand_type(result, {})

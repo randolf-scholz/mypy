@@ -68,7 +68,6 @@ from mypy.types import (
     UninhabitedType,
     UnionType,
     UnpackType,
-    find_unpack_in_list,
     flatten_nested_unions,
     get_proper_type,
     is_named_instance,
@@ -827,59 +826,85 @@ class SubtypeVisitor(TypeVisitor[bool]):
     def variadic_tuple_subtype(self, left: TupleType, right: TupleType) -> bool:
         """Check subtyping between two potentially variadic tuples.
 
-        Most non-trivial cases here are due to variadic unpacks like *tuple[X, ...],
-        we handle such unpacks as infinite unions Tuple[()] | Tuple[X] | Tuple[X, X] | ...
+        Most non-trivial cases here are due to variadic unpacks like *tuple[X, ...].
+        Note that in certain cases, we should consider types as identical:
+
+        - tuple[X, *tuple[X, ...]] and tuple[*tuple[X, ...], X] correspond to the same set of runtime values.
+          therefore, these types should be considered equivalent, even when proper_subtype is True.
+
+        Note:
+            If proper_subtype is True, we treat tuple[X, ...] as the infinite union
+                Tuple[()] | Tuple[X] | Tuple[X, X] | ...
+            If proper_subtype is False, we treat tuple[X, ...] as an AnyOf type
+                AnyOf[Tuple[()], Tuple[X], Tuple[X, X], ...].
+            See: https://github.com/python/typing/issues/566
+
+        Example:
+            tuple[X, ...] <: tuple[*tuple[X, ...], X]
+            then result is False if proper_subtype is True, otherwise True.
+
+        X <: AnyOf[U1, U2, ...]  iff  X <: Ui for some i
+        AnyOf[T1, T2, ...] <: X  iff  X <: Ui for some i
+        X <: Union[U1, U2, ...]  iff  X <: Ui for some i
+        Union[T1, T2, ...] <: X  iff  X <: Ui for all i
 
         Note: the cases where right is fixed or has *Ts unpack should be handled
         by the caller.
         """
-        right_unpack_index = find_unpack_in_list(right.items)
+        left_items = left.proper_items
+        right_items = right.proper_items
+        right_unpack_index = right.unpack_index
+        left_unpack_index = left.unpack_index
+        right_unpack = right.unpack
+
         if right_unpack_index is None:
             # This case should be handled by the caller.
             return False
-        right_unpack = right.items[right_unpack_index]
+
         assert isinstance(right_unpack, UnpackType)
         right_unpacked = get_proper_type(right_unpack.type)
         if not isinstance(right_unpacked, Instance):
             # This case should be handled by the caller.
             return False
         assert right_unpacked.type.fullname == "builtins.tuple"
-        right_item = right_unpacked.args[0]
-        right_prefix = right_unpack_index
-        right_suffix = len(right.items) - right_prefix - 1
-        left_unpack_index = find_unpack_in_list(left.items)
+        right_prefix_length = len(right.prefix)
+        right_suffix_length = len(right.suffix)
+        right_variadic_type = right_unpacked.args[0]
+
         if left_unpack_index is None:
             # Simple case: left is fixed, simply find correct mapping to the right
             # (effectively selecting item with matching length from an infinite union).
-            if len(left.items) < right_prefix + right_suffix:
+            if len(left_items) < right_prefix_length + right_suffix_length:
                 return False
             prefix, middle, suffix = split_with_prefix_and_suffix(
-                tuple(left.items), right_prefix, right_suffix
+                tuple(left_items), right_prefix_length, right_suffix_length
             )
             if not all(
-                self._is_subtype(li, ri) for li, ri in zip(prefix, right.items[:right_prefix])
+                self._is_subtype(li, ri)
+                for li, ri in zip(prefix, right_items[:right_prefix_length])
             ):
                 return False
-            if right_suffix and not all(
-                self._is_subtype(li, ri) for li, ri in zip(suffix, right.items[-right_suffix:])
+            if right_suffix_length and not all(
+                self._is_subtype(li, ri)
+                for li, ri in zip(suffix, right_items[-right_suffix_length:])
             ):
                 return False
-            return all(self._is_subtype(li, right_item) for li in middle)
+            return all(self._is_subtype(li, right_variadic_type) for li in middle)
         else:
-            if len(left.items) < len(right.items):
+            if self.proper_subtype and len(left_items) < len(right_items):
                 # There are some items on the left that will never have a matching length
                 # on the right.
                 return False
-            left_prefix = left_unpack_index
-            left_suffix = len(left.items) - left_prefix - 1
-            left_unpack = left.items[left_unpack_index]
+            left_prefix_length = len(left.prefix)
+            left_suffix_length = len(left.suffix)
+            left_unpack = left.unpack
             assert isinstance(left_unpack, UnpackType)
             left_unpacked = get_proper_type(left_unpack.type)
             if not isinstance(left_unpacked, Instance):
                 # *Ts unpack can't be split, except if it is all mapped to Anys or objects.
-                if self.is_top_type(right_item):
+                if self.is_top_type(right_variadic_type):
                     right_prefix_types, middle, right_suffix_types = split_with_prefix_and_suffix(
-                        tuple(right.items), left_prefix, left_suffix
+                        tuple(right_items), left_prefix_length, left_suffix_length
                     )
                     if not all(
                         self.is_top_type(ri) or isinstance(ri, UnpackType) for ri in middle
@@ -887,27 +912,42 @@ class SubtypeVisitor(TypeVisitor[bool]):
                         return False
                     # Also check the tails match as well.
                     return self._all_subtypes(
-                        left.items[:left_prefix], right_prefix_types
-                    ) and self._all_subtypes(left.items[-left_suffix:], right_suffix_types)
+                        left_items[:left_prefix_length], right_prefix_types
+                    ) and self._all_subtypes(left_items[-left_suffix_length:], right_suffix_types)
                 return False
             assert left_unpacked.type.fullname == "builtins.tuple"
-            left_item = left_unpacked.args[0]
+            left_variadic_type = left_unpacked.args[0]
 
             # The most tricky case with two variadic unpacks we handle similar to union
             # subtyping: *each* item on the left, must be a subtype of *some* item on the right.
             # For this we first check the "asymptotic case", i.e. that both unpacks a subtypes,
             # and then check subtyping for all finite overlaps.
-            if not self._is_subtype(left_item, right_item):
+            if not self._is_subtype(left_variadic_type, right_variadic_type):
                 return False
-            max_overlap = max(0, right_prefix - left_prefix, right_suffix - left_suffix)
+
+            # if proper_subtype is True, we test the Union case, otherwise the AnyOf case.
+            # For the former, *each* item on the left must be a subtype of *some* item on the right,
+            # for the latter, *some* item on the left must be a subtype of *some* item on the right.
+            max_overlap = max(
+                0,
+                right_prefix_length - left_prefix_length,
+                right_suffix_length - left_suffix_length,
+            )
             for overlap in range(max_overlap + 1):
-                repr_items = left.items[:left_prefix] + [left_item] * overlap
-                if left_suffix:
-                    repr_items += left.items[-left_suffix:]
+                repr_items = left_items[:left_prefix_length] + [left_variadic_type] * overlap
+                if left_suffix_length:
+                    repr_items += left_items[-left_suffix_length:]
                 left_repr = left.copy_modified(items=repr_items)
-                if not self._is_subtype(left_repr, right):
+                ok = self._is_subtype(left_repr, right)
+
+                # TODO: should we use more efficient "if ok XOR proper_subtype: return ok"?
+                if not ok and self.proper_subtype:
                     return False
-            return True
+                elif ok and not self.proper_subtype:
+                    return True
+
+            # TODO: should we just return proper_subtype directly?
+            return True if self.proper_subtype else False
 
     def is_top_type(self, typ: Type) -> bool:
         if not self.proper_subtype and isinstance(get_proper_type(typ), AnyType):

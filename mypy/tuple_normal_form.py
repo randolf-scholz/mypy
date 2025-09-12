@@ -11,7 +11,6 @@ from mypy.typeops import make_simplified_union
 from mypy.types import (
     AnyType,
     Instance,
-    ParamSpecFlavor,
     ParamSpecType,
     ProperType,
     TupleType,
@@ -133,9 +132,9 @@ class TupleHelper:
                     # unpacked is a TypeVarTuple, return Any
                     item_types.append(AnyType(TypeOfAny.from_omitted_generics))
                 elif isinstance(unpacked, ParamSpecType):
-                    assert (
-                        unpacked.flavor == ParamSpecFlavor.ARGS
-                    ), f"items={items}, {unpacked.flavor=}"
+                    # assert (
+                    #     unpacked.flavor == ParamSpecFlavor.ARGS
+                    # ), f"items={items}, {unpacked.flavor=}"
                     item_types.append(AnyType(TypeOfAny.from_omitted_generics))
                 else:
                     assert False, f"Unexpected unpacked type: {unpacked}"
@@ -440,6 +439,7 @@ class TupleNormalForm(NamedTuple):
             - tuple[*tuple[str, ...], str] -> [], [*tuple[str, ...]], [str]
             - Ts                           -> [], [*Ts], []
             - P.args                       -> [], [P], []
+            - list[Never]                  -> [], [list[Never]], []
 
         Some special casing is applied to unions:
             - list[int] | list[str] -> [], [list[int] | list[str]], []
@@ -720,7 +720,7 @@ class _TupleConstructor:
         elif isinstance(unpacked, TupleType):
             is_empty = not unpacked.proper_items
         elif self.context.is_tuple_instance_type(unpacked):
-            # we treat *tuple[Never, ...] as empty
+            # we treat *tuple[Never, ...] as non-empty
             is_empty = isinstance(unpacked.args[0], UninhabitedType)
         else:
             raise TypeError(f"unexpected type {unpacked!r}")

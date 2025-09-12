@@ -1737,7 +1737,7 @@ def test(
 [case testStarArgsWithSuffix]
 from typing import Unpack
 
-def f(*args: Unpack[tuple[Unpack[tuple[str, ...], int, int, int]]]) -> None: pass
+def f(*args: Unpack[tuple[Unpack[tuple[str, ...]], int, int, int]]) -> None: pass
 
 def test(x: tuple[str, ...], y: tuple[int, int, int], z: int) -> None:
     f(*x, z, z, z)

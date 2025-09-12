@@ -397,10 +397,11 @@ from typing_extensions import TypeVarTuple, Unpack
 Ts = TypeVarTuple("Ts")
 
 def args_to_tuple(*args: Unpack[Ts]) -> Tuple[Unpack[Ts]]:
-    with_prefix_suffix(*args)  # E: Too few arguments for "with_prefix_suffix" \
-                               # E: Argument 1 to "with_prefix_suffix" has incompatible type "*tuple[Unpack[Ts]]"; expected "bool"
+    x = with_prefix_suffix(*args)  # E: Argument 1 to "with_prefix_suffix" has incompatible type "*tuple[Unpack[Ts]]"; expected "Unpack[tuple[Unpack[tuple[Any, ...]], int]]"
+    reveal_type(x)  # N: Revealed type is "tuple[builtins.bool, builtins.str, Unpack[builtins.tuple[Any, ...]], builtins.int]"
     new_args = (True, "foo", *args, 5)
-    with_prefix_suffix(*new_args)
+    y = with_prefix_suffix(*new_args)
+    reveal_type(y)  # N: Revealed type is "tuple[builtins.bool, builtins.str, Unpack[Ts`-1], builtins.int]"
     return args
 
 def with_prefix_suffix(*args: Unpack[Tuple[bool, str, Unpack[Ts], int]]) -> Tuple[bool, str, Unpack[Ts], int]:
@@ -426,6 +427,7 @@ with_prefix_suffix(*bad_t)  # E: Too few arguments for "with_prefix_suffix"
 
 def foo(*args: Unpack[Ts]) -> None:
     reveal_type(with_prefix_suffix(True, "bar", *args, 5))  # N: Revealed type is "tuple[builtins.bool, builtins.str, Unpack[Ts`-1], builtins.int]"
+
 [builtins fixtures/tuple.pyi]
 
 [case testTypeVarTuplePep646TypeVarStarArgsFixedLengthTuple]
@@ -1652,8 +1654,7 @@ def foo(arg: Tuple[int, Unpack[Ts], str]) -> None:
     y = 1, *arg, 2
     reveal_type(y)  # N: Revealed type is "tuple[builtins.int, builtins.int, Unpack[Ts`-1], builtins.str, builtins.int]"
     z = (*arg, *arg)
-    # TODO: can we do something better here?
-    reveal_type(z)  # N: Revealed type is "builtins.tuple[Any, ...]"
+    reveal_type(z)  # N: Revealed type is "tuple[builtins.int, Unpack[builtins.tuple[Union[Any, builtins.str, builtins.int], ...]], builtins.str]"
 [builtins fixtures/tuple.pyi]
 
 [case testPackingVariadicTuplesHomogeneous]
@@ -1676,7 +1677,7 @@ reveal_type(x2)  # N: Revealed type is "tuple[builtins.int, Unpack[builtins.tupl
 y2 = 1, *b, 2
 reveal_type(y2)  # N: Revealed type is "tuple[builtins.int, builtins.int, Unpack[builtins.tuple[builtins.float, ...]], builtins.str, builtins.int]"
 z2 = (*b, *b)
-reveal_type(z2)  # N: Revealed type is "builtins.tuple[Union[builtins.float, builtins.str, builtins.int], ...]"
+reveal_type(z2)  # N: Revealed type is "tuple[builtins.int, Unpack[builtins.tuple[Union[builtins.float, builtins.str, builtins.int], ...]], builtins.str]"
 [builtins fixtures/tuple.pyi]
 
 [case testVariadicTupleInListSetExpr]
@@ -1831,7 +1832,7 @@ A1 = Tuple[int, Unpack[Tuple[Int, ...]]]
 B1 = Tuple[Unpack[Tuple[Int, ...]], int]
 
 @overload
-def f1(arg: A1) -> int: ...  # E: Overloaded function signatures 1 and 2 overlap with incompatible return types
+def f1(arg: A1) -> int: ...
 @overload
 def f1(arg: B1) -> str: ...
 def f1(arg: Union[A1, B1]) -> Union[int, str]:
@@ -2221,7 +2222,7 @@ reveal_type(cb)  # N: Revealed type is "def (*builtins.int, **Unpack[TypedDict('
 cb2: Callable[[int, Unpack[Ints], int, Unpack[Keywords]], None]
 reveal_type(cb2)  # N: Revealed type is "def (builtins.int, *Unpack[tuple[Unpack[builtins.tuple[builtins.int, ...]], builtins.int]], **Unpack[TypedDict('__main__.Keywords', {'a': builtins.str, 'b': builtins.str})])"
 cb2(1, 2, 3, a="a", b="b")
-cb2(1, a="a", b="b")  # E: Too few arguments; star parameter expects at least 1 item(s)
+cb2(1, a="a", b="b")  # E: Too few arguments
 cb2(1, 2, 3, a="a")  # E: Missing named argument "b"
 
 bad1: Callable[[Unpack[Ints], Unpack[Ints]], None]  # E: More than one variadic Unpack in a type is not allowed
@@ -2231,6 +2232,7 @@ reveal_type(bad2)  # N: Revealed type is "def (*Any, **Unpack[TypedDict('__main_
 bad3: Callable[[Unpack[Keywords], Unpack[Ints]], None]  # E: "Keywords" cannot be unpacked (must be tuple or TypeVarTuple) \
                                                         # E: More than one variadic Unpack in a type is not allowed
 reveal_type(bad3)  # N: Revealed type is "def (*Any)"
+
 [builtins fixtures/dict.pyi]
 [typing fixtures/typing-typeddict.pyi]
 

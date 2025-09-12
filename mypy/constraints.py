@@ -1232,6 +1232,16 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
         elif isinstance(actual, ParamSpecType):
             return infer_constraints(template, actual.upper_bound, self.direction)
         elif isinstance(actual, TypeVarTupleType):
+            if template.type.fullname == "builtins.tuple":
+                # infer constraints for tuple[T, ...] vs Ts
+                # tuple[T, ...] :> Ts   =>   T :> Union[*Ts] ≈ Any
+                # tuple[T, ...] <: Ts   =>   T <: Intersection[*Ts] ≈ Any
+                generic_type = template.args[0]
+                return [
+                    Constraint(
+                        generic_type, self.direction, AnyType(TypeOfAny.from_omitted_generics)
+                    )
+                ]
             raise NotImplementedError
         else:
             return []

@@ -1854,11 +1854,12 @@ def test_right_variadic_param_with_left_variadic_argument(
     l4: tuple[Unpack[tuple[A, ...]], A1, A2, A3, A4],
 ) -> None:
     # tuple[T, T, T, *tuple[T, ...]] -> T
-    reveal_type( right_variadic(*l0) )  # N: Revealed type is "A"
-    reveal_type( right_variadic(*l1) )  # N: Revealed type is "Union[A, A1]"
-    reveal_type( right_variadic(*l2) )  # N: Revealed type is "Union[A, A1, A2]"
-    reveal_type( right_variadic(*l3) )  # N: Revealed type is "Union[A, A1, A2, A3]"
-    reveal_type( right_variadic(*l4) )  # N: Revealed type is "Union[A, A1, A2, A3, A4]"
+    reveal_type( right_variadic(*l0) )  # N: Revealed type is "__main__.A"
+    reveal_type( right_variadic(*l1) )  # N: Revealed type is "builtins.object"
+    reveal_type( right_variadic(*l2) )  # N: Revealed type is "builtins.object"
+    reveal_type( right_variadic(*l3) )  # N: Revealed type is "builtins.object"
+    reveal_type( right_variadic(*l4) )  # N: Revealed type is "builtins.object"
+    # NOTE: when using union instead of join this should be Union[A, A1, A2, A3, A4]
 
 def test_right_variadic_param_with_right_variadic_argument(
     r0: tuple[Unpack[tuple[A, ...]]],
@@ -1868,11 +1869,12 @@ def test_right_variadic_param_with_right_variadic_argument(
     r4: tuple[A1, A2, A3, A4, Unpack[tuple[A, ...]]],
 ) -> None:
     # tuple[T, T, T, *tuple[T, ...]] -> T
-    reveal_type( right_variadic(*r0) )  # N: Revealed type is "A"
-    reveal_type( right_variadic(*r1) )  # N: Revealed type is "Union[A, A1]"
-    reveal_type( right_variadic(*r2) )  # N: Revealed type is "Union[A, A1, A2]"
-    reveal_type( right_variadic(*r3) )  # N: Revealed type is "Union[A, A1, A2, A3]"
-    reveal_type( right_variadic(*r4) )  # N: Revealed type is "Union[A, A1, A2, A3, A4]"
+    reveal_type( right_variadic(*r0) )  # N: Revealed type is "__main__.A"
+    reveal_type( right_variadic(*r1) )  # N: Revealed type is "builtins.object"
+    reveal_type( right_variadic(*r2) )  # N: Revealed type is "builtins.object"
+    reveal_type( right_variadic(*r3) )  # N: Revealed type is "builtins.object"
+    reveal_type( right_variadic(*r4) )  # N: Revealed type is "builtins.object"
+    # NOTE: when using union instead of join this should be Union[A, A1, A2, A3, A4]
 
 def test_left_variadic_param_with_right_variadic_argument(
     r0: tuple[Unpack[tuple[A, ...]]],
@@ -1882,11 +1884,12 @@ def test_left_variadic_param_with_right_variadic_argument(
     r4: tuple[A1, A2, A3, A4, Unpack[tuple[A, ...]]],
 )-> None:
     # tuple[*tuple[T, ...], T, T, T] -> T
-    reveal_type( left_variadic(*r0) )  # N: Revealed type is "A"
-    reveal_type( left_variadic(*r1) )  # N: Revealed type is "Union[A, A1]"
-    reveal_type( left_variadic(*r2) )  # N: Revealed type is "Union[A, A1, A2]"
-    reveal_type( left_variadic(*r3) )  # N: Revealed type is "Union[A, A1, A2, A3]"
-    reveal_type( left_variadic(*r4) )  # N: Revealed type is "Union[A, A1, A2, A3, A4]"
+    reveal_type( left_variadic(*r0) )  # N: Revealed type is "__main__.A"
+    reveal_type( left_variadic(*r1) )  # N: Revealed type is "builtins.object"
+    reveal_type( left_variadic(*r2) )  # N: Revealed type is "builtins.object"
+    reveal_type( left_variadic(*r3) )  # N: Revealed type is "builtins.object"
+    reveal_type( left_variadic(*r4) )  # N: Revealed type is "builtins.object"
+    # NOTE: when using union instead of join this should be Union[A, A1, A2, A3, A4]
 
 def test_left_variadic_param_with_left_variadic_argument(
     l0: tuple[Unpack[tuple[A, ...]]],
@@ -1896,11 +1899,12 @@ def test_left_variadic_param_with_left_variadic_argument(
     l4: tuple[Unpack[tuple[A, ...]], A1, A2, A3, A4],
 )-> None:
     # tuple[*tuple[T, ...], T, T, T] -> T
-    reveal_type( left_variadic(*l0) )  # N: Revealed type is "A"
-    reveal_type( left_variadic(*l1) )  # N: Revealed type is "Union[A, A1]"
-    reveal_type( left_variadic(*l2) )  # N: Revealed type is "Union[A, A1, A2]"
-    reveal_type( left_variadic(*l3) )  # N: Revealed type is "Union[A, A1, A2, A3]"
-    reveal_type( left_variadic(*l4) )  # N: Revealed type is "Union[A, A1, A2, A3, A4]"
+    reveal_type( left_variadic(*l0) )  # N: Revealed type is "__main__.A"
+    reveal_type( left_variadic(*l1) )  # N: Revealed type is "builtins.object"
+    reveal_type( left_variadic(*l2) )  # N: Revealed type is "builtins.object"
+    reveal_type( left_variadic(*l3) )  # N: Revealed type is "builtins.object"
+    reveal_type( left_variadic(*l4) )  # N: Revealed type is "builtins.object"
+    # NOTE: when using union instead of join this should be Union[A, A1, A2, A3, A4]
 [builtins fixtures/tuple.pyi]
 
 

@@ -2968,9 +2968,11 @@ class TupleType(ProperType):
             tuple[*tuple[int, str]] -> tuple[int, str]
         """
         proper_items = self.proper_items
-        if len(proper_items) == 1 and isinstance(first := proper_items[0], UnpackType):
-            assert isinstance(first.type, (TupleType, Instance, TypeVarType, ParamSpecType))
-            return first.type
+        if len(proper_items) == 1 and isinstance(first_item := proper_items[0], UnpackType):
+            assert isinstance(
+                first_item.type, (TupleType, Instance, TypeVarTupleType, ParamSpecType)
+            ), f"{type(first_item.type)=}"
+            return first_item.type
         return self
 
 

@@ -920,7 +920,7 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
         ):
             # Ts can be bounded by other Ts, TupleType or variadic tuple
             return [Constraint(template, self.direction, actual)]
-        raise NotImplementedError
+        raise NotImplementedError("Cannot infer TypeVarTupleType from " + str(actual))
 
     def visit_unpack_type(self, template: UnpackType) -> list[Constraint]:
         raise RuntimeError("Mypy bug: unpack should be handled at a higher level.")
@@ -1741,7 +1741,7 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
 
                     # match P1, ..., Pk to *Vs
                     # Use actual_unpack_fallback here, since TVTs do not support slicing or indexing
-                    for item in template_prefix[: template_prefix_size - actual_prefix_size]:
+                    for item in template_prefix[actual_prefix_size:]:
                         constraints += infer_constraints(
                             item, actual_unpack_item_type, self.direction
                         )
@@ -1776,7 +1776,7 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
                         constraints += infer_constraints(
                             t_item, actual_unpack_item_type, self.direction
                         )
-                    for t_item in template_suffix[actual_suffix_size:]:
+                    for t_item in template_suffix[: template_suffix_size - actual_suffix_size]:
                         constraints += infer_constraints(
                             t_item, actual_unpack_item_type, self.direction
                         )

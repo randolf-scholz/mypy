@@ -2486,6 +2486,14 @@ class CallableType(FunctionLike):
             types_middle = unpacked.items
             kinds_middle = [ARG_POS] * len(unpacked.items)
             names_middle = [no_name] * len(unpacked.items)
+        elif False:
+            unpacked = unpacked.simplify()
+            if isinstance(unpacked, Instance) and unpacked.type.fullname == "builtins.tuple":
+                # *Tuple[X, ...] -> *X
+                new_unpack = unpacked.args[0]
+            else:
+                new_unpack = UnpackType(unpacked)
+            return self.copy_modified(arg_types=types_prefix + [new_unpack] + types_suffix)
         else:
             # *Tuple[X, *Ts, Y, Z] or *Tuple[X, *tuple[T, ...], X, Z], here
             # we replace the prefix by ARG_POS (this is how some places expect
@@ -2905,10 +2913,14 @@ class TupleType(ProperType):
         res = []
         for typ in self.items:
             p_t = get_proper_type(typ)
-            if isinstance(p_t, UnpackType) and isinstance(
-                unpacked := get_proper_type(p_t.type), TupleType
-            ):
-                res.extend(unpacked.proper_items)
+            if isinstance(p_t, UnpackType):
+                unpacked = get_proper_type(p_t.type)
+                if isinstance(unpacked, TupleType):
+                    # recursively expand nested tuples.
+                    res.extend(unpacked.proper_items)
+                else:
+                    # repackage using the proper type.
+                    res.append(UnpackType(unpacked))
             else:
                 res.append(p_t)
         return res
@@ -2960,7 +2972,10 @@ class TupleType(ProperType):
         return len(self.prefix) + len(self.suffix)
 
     def simplify(self) -> TupleType | Instance | TypeVarType:
-        """Simplify a tuple type that is just an unpack.
+        r"""Simplify a tuple type.
+
+        1. expand nested unpacks
+        2. if the tuple is a single unpack, return the unpacked type
 
         Example:
             tuple[*tuple[int, ...]] -> tuple[int, ...]

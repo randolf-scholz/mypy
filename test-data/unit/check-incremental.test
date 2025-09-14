@@ -6713,7 +6713,6 @@ tmp/a.py:20: error: Unexpected keyword argument "a" for "foo"
 tmp/partial.py:4: note: "foo" defined here
 [out2]
 tmp/a.py:8: error: Too many positional arguments for "foo"
-tmp/a.py:8: error: Argument 2 to "foo" has incompatible type "int"; expected "str"
 
 
 [case testStartUsingTypeGuard]

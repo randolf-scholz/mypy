@@ -1466,10 +1466,7 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
         from mypy.tuple_normal_form import TupleHelper, get_std_tuple_typeinfo
 
         actual = self.actual
-        original_actual = actual  # backup for error messages
-        std_tuple_typeinfo = get_std_tuple_typeinfo(
-            template
-        )  #  extract typeinfo of builtins.tuple
+        std_tuple_typeinfo = get_std_tuple_typeinfo(template)
         tuple_helper = TupleHelper(std_tuple_typeinfo)
 
         if tuple_helper.is_tuple_instance_subtype(actual):
@@ -1505,7 +1502,6 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
             actual_prefix_size = len(actual_prefix)
             actual_suffix_size = len(actual_suffix)
             actual_size = actual_prefix_size + actual_suffix_size
-            actual_fallback = actual.partial_fallback
 
             template_prefix = template.prefix
             template_suffix = template.suffix
@@ -1733,7 +1729,6 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
                     else:
                         # match *Us to [A1, ..., Ak, *Vs], using actual_unpack_fallback for *Vs
                         remaining_actual_prefix = actual_prefix[template_prefix_size:]
-                        fallback = template.partial_fallback  # technically incorrect
                         remaining_actual = tuple_helper.make_tuple_type(
                             [*remaining_actual_prefix, actual_unpack_fallback]
                         )
@@ -1800,97 +1795,6 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
                 assert False, "Unreachable"
 
             return constraints
-
-        if False:
-
-            if unpack_index is not None:
-                if is_varlength_tuple:
-                    # Variadic tuple can be only a supertype of a tuple type, but even if
-                    # direction is opposite, inferring something may give better error messages.
-                    unpack_type = template.items[unpack_index]
-                    assert isinstance(unpack_type, UnpackType)
-                    unpacked_type = get_proper_type(unpack_type.type)
-                    if isinstance(unpacked_type, TypeVarTupleType):
-                        res = [
-                            Constraint(type_var=unpacked_type, op=self.direction, target=actual)
-                        ]
-                    else:
-                        assert (
-                            isinstance(unpacked_type, Instance)
-                            and unpacked_type.type.fullname == "builtins.tuple"
-                        )
-                        res = infer_constraints(unpacked_type, actual, self.direction)
-                    assert isinstance(actual, Instance)  # ensured by is_varlength_tuple == True
-                    for i, ti in enumerate(template.items):
-                        if i == unpack_index:
-                            # This one we just handled above.
-                            continue
-                        # For Tuple[T, *Ts, S] <: tuple[X, ...] infer also T <: X and S <: X.
-                        res.extend(infer_constraints(ti, actual.args[0], self.direction))
-                    return res
-                else:
-                    assert isinstance(actual, TupleType)
-                    unpack_constraints = build_constraints_for_simple_unpack(
-                        template.items, actual.items, self.direction
-                    )
-                    actual_items: tuple[Type, ...] = ()
-                    template_items: tuple[Type, ...] = ()
-                    res.extend(unpack_constraints)
-            elif isinstance(actual, TupleType):
-                a_unpack_index = find_unpack_in_list(actual.items)
-                if a_unpack_index is not None:
-                    # The case where template tuple doesn't have an unpack, but actual tuple
-                    # has an unpack. We can infer something if actual unpack is a variadic tuple.
-                    # Tuple[T, S, U] <: tuple[X, *tuple[Y, ...], Z] => T <: X, S <: Y, U <: Z.
-                    a_unpack = actual.items[a_unpack_index]
-                    assert isinstance(a_unpack, UnpackType)
-                    a_unpacked = get_proper_type(a_unpack.type)
-                    if len(actual.items) + 1 <= len(template.items):
-                        a_prefix_len = a_unpack_index
-                        a_suffix_len = len(actual.items) - a_unpack_index - 1
-                        t_prefix, t_middle, t_suffix = split_with_prefix_and_suffix(
-                            tuple(template.items), a_prefix_len, a_suffix_len
-                        )
-                        actual_items = tuple(actual.items[:a_prefix_len])
-                        if a_suffix_len:
-                            actual_items += tuple(actual.items[-a_suffix_len:])
-                        template_items = t_prefix + t_suffix
-                        if isinstance(a_unpacked, Instance):
-                            assert a_unpacked.type.fullname == "builtins.tuple"
-                            for tm in t_middle:
-                                res.extend(
-                                    infer_constraints(tm, a_unpacked.args[0], self.direction)
-                                )
-                    else:
-                        actual_items = ()
-                        template_items = ()
-                else:
-                    actual_items = tuple(actual.items)
-                    template_items = tuple(template.items)
-            else:
-                return res
-
-            # Cases above will return if actual wasn't a TupleType.
-            assert isinstance(actual, TupleType)
-            if len(actual_items) == len(template_items):
-                if (
-                    actual.partial_fallback.type.is_named_tuple
-                    and template.partial_fallback.type.is_named_tuple
-                ):
-                    # For named tuples using just the fallbacks usually gives better results.
-                    return res + infer_constraints(
-                        template.partial_fallback, actual.partial_fallback, self.direction
-                    )
-                for i in range(len(template_items)):
-                    res.extend(
-                        infer_constraints(template_items[i], actual_items[i], self.direction)
-                    )
-            res.extend(
-                infer_constraints(
-                    template.partial_fallback, actual.partial_fallback, self.direction
-                )
-            )
-            return res
         elif isinstance(actual, AnyType):
             return self.infer_against_any(template.items, actual)
         else:

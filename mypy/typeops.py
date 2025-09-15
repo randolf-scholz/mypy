@@ -107,10 +107,9 @@ def tuple_fallback(typ: TupleType) -> Instance:
         if isinstance(item, UnpackType):
             unpacked_type = get_proper_type(item.type)
             if isinstance(unpacked_type, TypeVarTupleType):
-                unpacked_type = get_proper_type(unpacked_type.upper_bound)
-                # Note: using the upper bound is not always correct, since it can lead to
-                #    overly strict constraints.
-                items.append(AnyType(TypeOfAny.from_omitted_generics))
+                # TODO: In principle the correct value is Union[*Ts]
+                #     until this is supported use Any.
+                items.append(AnyType(TypeOfAny.special_form))
             elif (
                 isinstance(unpacked_type, Instance)
                 and unpacked_type.type.fullname == "builtins.tuple"

@@ -8,7 +8,7 @@ import time
 from collections import defaultdict
 from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager, nullcontext
-from typing import Callable, ClassVar, Final, Optional, cast, overload
+from typing import Callable, ClassVar, Final, NamedTuple, Optional, cast, overload
 from typing_extensions import TypeAlias as _TypeAlias, assert_never
 
 import mypy.checker
@@ -2648,14 +2648,6 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                 # once we hit the first variadic actual ARG_STAR, we break
                 # then, we queue all items until we hit the last variadic actual ARG_STAR.
                 # finally, we check the args for the grouped items.
-                from typing import NamedTuple
-
-                class _Actual(NamedTuple):
-                    actual_id: int
-                    actual_kind: ArgKind
-                    actual_type: Type
-                    expanded_type: Type
-                    actual_size: int
 
                 prefix_actuals: list[_Actual] = []
                 middle_actuals: list[_Actual] = []
@@ -2715,9 +2707,9 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
 
                 actual_queue = deque(parsed_actuals)
 
-                expected_prefix_types = deque()
-                expected_suffix_types = deque()
-                expected_middle_types = deque()
+                expected_prefix_types: deque[Type] = deque()
+                expected_suffix_types: deque[Type] = deque()
+                expected_middle_types: deque[Type] = deque()
 
                 formal_prefix_index = 0
                 formal_suffix_index = 0
@@ -2725,23 +2717,23 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                 # first, match prefix items left to right
                 while actual_queue and formal_prefix_index < formal_prefix_length:
                     # get the actual from the front of the queue
-                    actual = actual_queue.popleft()
+                    current = actual_queue.popleft()
 
-                    if actual.actual_kind == ARG_POS:
+                    if current.actual_kind == ARG_POS:
                         expected_type = tuple_helper.get_item(formal_tuple, formal_prefix_index)
                         formal_prefix_index += 1
                         expected_prefix_types.append(expected_type)
 
-                    elif actual.actual_kind == ARG_STAR:
-                        assert isinstance(actual.expanded_type, TupleType)
+                    elif current.actual_kind == ARG_STAR:
+                        assert isinstance(current.expanded_type, TupleType)
                         # check the size of the actual. If it is variadic or larger than the remaining prefix,
                         # put it back into the queue and break
-                        size = actual.expanded_type.minimum_length
+                        size = current.expanded_type.minimum_length
                         if (
-                            actual.expanded_type.is_variadic
+                            current.expanded_type.is_variadic
                             or formal_prefix_index + size > formal_prefix_length
                         ):
-                            actual_queue.appendleft(actual)
+                            actual_queue.appendleft(current)
                             break
                         # otherwise, determine the expected type and append it.
                         expected_type = tuple_helper.get_slice(
@@ -2758,25 +2750,25 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                 # secondly match suffix items right to left
                 while actual_queue and formal_suffix_index < formal_suffix_length:
                     # get the actual from the end of the queue
-                    actual = actual_queue.pop()
+                    current = actual_queue.pop()
 
-                    if actual.actual_kind == ARG_POS:
+                    if current.actual_kind == ARG_POS:
                         expected_type = tuple_helper.get_item(
                             formal_tuple, -formal_suffix_index - 1
                         )
                         formal_suffix_index += 1
                         expected_suffix_types.appendleft(expected_type)
 
-                    elif actual.actual_kind == ARG_STAR:
-                        assert isinstance(actual.expanded_type, TupleType)
+                    elif current.actual_kind == ARG_STAR:
+                        assert isinstance(current.expanded_type, TupleType)
                         # check the size of the actual. If it is variadic or larger than the remaining suffix,
                         # put it back into the queue and break
-                        size = actual.expanded_type.minimum_length
+                        size = current.expanded_type.minimum_length
                         if (
-                            actual.expanded_type.is_variadic
+                            current.expanded_type.is_variadic
                             or formal_suffix_index + size > formal_suffix_length
                         ):
-                            actual_queue.append(actual)
+                            actual_queue.append(current)
                             break
                         # otherwise, we can consume it
                         expected_type = tuple_helper.get_slice(
@@ -2793,17 +2785,17 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
 
                 # finally, match the remaining items against the unpack part
                 while actual_queue:
-                    actual = actual_queue.popleft()
+                    current = actual_queue.popleft()
 
-                    if actual.actual_kind == ARG_POS:
+                    if current.actual_kind == ARG_POS:
                         expected_type = tuple_helper.get_item(formal_tuple, formal_prefix_index)
                         expected_middle_types.append(expected_type)
                         formal_prefix_index += 1
 
-                    elif actual.actual_kind == ARG_STAR:
-                        assert isinstance(actual.expanded_type, TupleType)
-                        prefix_size = len(actual.expanded_type.prefix)
-                        suffix_size = len(actual.expanded_type.suffix)
+                    elif current.actual_kind == ARG_STAR:
+                        assert isinstance(current.expanded_type, TupleType)
+                        prefix_size = len(current.expanded_type.prefix)
+                        suffix_size = len(current.expanded_type.suffix)
                         expected_type = tuple_helper.get_slice(
                             formal_tuple,
                             start=formal_prefix_index,
@@ -5519,7 +5511,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
         # )
         if seen_unpack_in_items:
             # Return already normalized tuple type just in case.
-            result = expand_type(result, {})
+            return expand_type(result, {})
         return result
 
     def fast_dict_type(self, e: DictExpr) -> Type | None:
@@ -7121,11 +7113,14 @@ def _find_first_unbounded_tuple(tuples: list[TupleType]) -> int | None:
     return None
 
 
-def show(*args: object) -> None:
-    if False:
-        print(*args)
-
-
 def is_variadic_tuple(typ: Type) -> bool:
     p_t = get_proper_type(typ)
     return isinstance(p_t, TupleType) and p_t.is_variadic
+
+
+class _Actual(NamedTuple):
+    actual_id: int
+    actual_kind: ArgKind
+    actual_type: Type
+    expanded_type: ProperType
+    actual_size: int

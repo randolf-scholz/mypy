@@ -1189,12 +1189,12 @@ class TypeList(ProperType):
 
     items: list[Type]
 
-    def __init__(self, items: list[Type], line: int = -1, column: int = -1) -> None:
+    def __init__(self, items: Sequence[Type], line: int = -1, column: int = -1) -> None:
         super().__init__(line, column)
-        self.items = items
+        self.items = list(items)
 
     def accept(self, visitor: TypeVisitor[T]) -> T:
-        assert isinstance(visitor, SyntheticTypeVisitor), f"Got {type(visitor)}"
+        assert isinstance(visitor, SyntheticTypeVisitor)
         ret: T = visitor.visit_type_list(self)
         return ret
 
@@ -1213,7 +1213,8 @@ class UnpackType(ProperType):
     or unpacking * syntax.
 
     The inner type should be either a TypeVarTuple, or a variable length tuple.
-    In an exceptional case of callable star argument it can be a fixed length tuple.
+    In an exceptional case of callable star argument it can be a fixed length tuple or
+    ParamSpecType.
 
     Note: the above restrictions are only guaranteed by normalizations after semantic
     analysis, if your code needs to handle UnpackType *during* semantic analysis, it is
@@ -2941,7 +2942,9 @@ class TupleType(ProperType):
         unpack_index = self.unpack_index
         if unpack_index is None:
             return None
-        return self.proper_items[unpack_index]
+        unpack = self.proper_items[unpack_index]
+        assert isinstance(unpack, UnpackType)
+        return unpack
 
     @property
     def suffix(self) -> list[ProperType]:
@@ -2985,7 +2988,8 @@ class TupleType(ProperType):
         proper_items = self.proper_items
         if len(proper_items) == 1 and isinstance(first_item := proper_items[0], UnpackType):
             assert isinstance(
-                first_item.type, (TupleType, Instance, TypeVarTupleType, ParamSpecType)
+                get_proper_type(first_item.type),
+                (TupleType, Instance, TypeVarTupleType, ParamSpecType),
             ), f"{type(first_item.type)=}"
             return first_item.type
         return self
@@ -4200,7 +4204,7 @@ def find_unpack_in_list(items: Sequence[Type]) -> int | None:
             # semanal phase.
             # Funky code here avoids mypyc narrowing the type of unpack_index.
             old_index = unpack_index
-            assert old_index is None, f"Multiple UnpackType found in {items}"
+            assert old_index is None
             # Don't return so that we can also sanity check there is only one.
             unpack_index = i
     return unpack_index

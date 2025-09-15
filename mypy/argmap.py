@@ -71,19 +71,19 @@ def map_actuals_to_formals(
         elif actual_kind.is_named():
             assert actual_names is not None, "Internal error: named kinds without names given"
             name = actual_names[ai]
-            if name in formal_names and formal_kinds[formal_names.index(name)] != ARG_STAR:
+            if name in formal_names and formal_kinds[formal_names.index(name)] != nodes.ARG_STAR:
                 formal_to_actual[formal_names.index(name)].append(ai)
             elif ARG_STAR2 in formal_kinds:
                 formal_to_actual[formal_kinds.index(ARG_STAR2)].append(ai)
         else:
-            assert actual_kind == ARG_STAR2
+            assert actual_kind == nodes.ARG_STAR2
             actualt = get_proper_type(actual_arg_type(ai))
             if isinstance(actualt, TypedDictType):
                 for name in actualt.items:
                     if name in formal_names:
                         formal_to_actual[formal_names.index(name)].append(ai)
-                    elif ARG_STAR2 in formal_kinds:
-                        formal_to_actual[formal_kinds.index(ARG_STAR2)].append(ai)
+                    elif nodes.ARG_STAR2 in formal_kinds:
+                        formal_to_actual[formal_kinds.index(nodes.ARG_STAR2)].append(ai)
             else:
                 # We don't exactly know which **kwargs are provided by the
                 # caller, so we'll defer until all the other unambiguous
@@ -100,10 +100,13 @@ def map_actuals_to_formals(
             for fi in range(nformals)
             if (
                 formal_names[fi]
-                and (not formal_to_actual[fi] or actual_kinds[formal_to_actual[fi][0]] == ARG_STAR)
-                and formal_kinds[fi] != ARG_STAR
+                and (
+                    not formal_to_actual[fi]
+                    or actual_kinds[formal_to_actual[fi][0]] == nodes.ARG_STAR
+                )
+                and formal_kinds[fi] != nodes.ARG_STAR
             )
-            or formal_kinds[fi] == ARG_STAR2
+            or formal_kinds[fi] == nodes.ARG_STAR2
         ]
         for ai in ambiguous_actual_kwargs:
             for fi in unmatched_formals:
@@ -161,6 +164,44 @@ class ArgTypeExpander:
         # Type context for `*` and `**` arg kinds.
         self.context = context
 
+    def parse_star_argument(self, star_arg: Type, /) -> TupleType:
+        r"""Parse the type of ``*args`` argument into a tuple type.
+
+        Note: For star parameters, use `parse_star_parameter` instead.
+        """
+        tnf = TupleNormalForm.from_star_arg(star_arg)
+        return tnf.materialize(self.context)
+
+    def parse_star_parameter(self, star_param: Type, /) -> TupleType:
+        r"""Parse the type of a ``*args: T`` parameter into a tuple type.
+
+        This is different from `parse_star_argument` since mypy does some translation
+        for certain annotations. Below are some examples of how this works.
+
+        | annotation            | semanal result        | parsed result           |
+        |-----------------------|-----------------------|-------------------------|
+        | *args: int            | int                   | tuple[*tuple[int, ...]] |
+        | *args: *tuple[T, ...] | Unpack[tuple[T, ...]] | tuple[*tuple[T, ...]]   |
+        | *args: *tuple[A, B]   | Unpack[tuple[A, B]]   | tuple[A, B]             |
+        | *args: *Ts            | Unpack[Ts]            | tuple[*Ts]              |
+        | *args: P.args         | P.args                | tuple[*P.args]          |
+        """
+        p_t = get_proper_type(star_param)
+        if isinstance(p_t, UnpackType):
+            unpacked = get_proper_type(p_t.type)
+            if isinstance(unpacked, TupleType):
+                return unpacked
+            return TupleType([p_t], fallback=self.context.fallback_tuple)
+
+        elif isinstance(p_t, ParamSpecType):
+            # We put the ParamSpec inside an UnpackType.
+            parsed = UnpackType(p_t)
+            return TupleType([parsed], fallback=self.context.fallback_tuple)
+
+        else:  # e.g. *args: int  --> *args: *tuple[int, ...]
+            parsed = UnpackType(self.context.make_tuple_instance_type(p_t))
+            return TupleType([parsed], fallback=self.context.fallback_tuple)
+
     def expand_actual_type(
         self,
         actual_type: Type,
@@ -170,11 +211,12 @@ class ArgTypeExpander:
     ) -> Type:
         """Return the actual (caller) type(s) of a formal argument with the given kinds.
 
-        If the actual argument is a tuple *args, then:
+        If the actual argument is a star argument *args, then:
             1. If the formal argument is positional, return the next individual tuple item that
-               maps to the formal arg. If the tuple is exhausted, return 'None'
-            2. If the formal argument is also *args, returns a tuple type with the items
-               that map to the formal arg.
+               maps to the formal arg.
+               If the tuple is exhausted, returns UninhabitedType.
+            2. If the formal argument is a star parameter, returns a tuple type with the items
+               that map to the formal arg by slicing.
                If the tuple is exhausted, returns an empty tuple type.
 
         If the actual argument is a TypedDict **kwargs, return the next matching typed dict
@@ -187,17 +229,11 @@ class ArgTypeExpander:
         actual_type = get_proper_type(actual_type)
 
         if actual_kind == ARG_POS:
-            if formal_kind in (ARG_POS, ARG_OPT):
-                # return as-is
-                return original_actual
-            elif formal_kind == ARG_STAR:
-                # wrap in a tuple
-                return original_actual
-                # return TupleType([original_actual], fallback=self.context.tuple_type)
-            else:
-                assert False, f"unexpected formal kind {formal_kind} for positional actual"
+            assert formal_kind in (ARG_POS, ARG_OPT, ARG_STAR)
+            return original_actual
 
         elif actual_kind == ARG_STAR:
+            assert formal_kind in (ARG_POS, ARG_OPT, ARG_STAR)
             # parse *args into a TupleType.
             star_args_type = self.parse_star_argument(actual_type)
             tuple_helper = TupleHelper(self.context.tuple_typeinfo)
@@ -247,13 +283,13 @@ class ArgTypeExpander:
         elif actual_kind == ARG_NAMED:
             return original_actual
 
-        elif actual_kind == ARG_STAR2:
+        elif actual_kind == nodes.ARG_STAR2:
             from mypy.subtypes import is_subtype
 
             if isinstance(actual_type, TypedDictType):
                 if self.kwargs_used is None:
                     self.kwargs_used = set()
-                if formal_kind != ARG_STAR2 and formal_name in actual_type.items:
+                if formal_kind != nodes.ARG_STAR2 and formal_name in actual_type.items:
                     # Lookup type based on keyword argument name.
                     assert formal_name is not None
                 else:
@@ -274,100 +310,5 @@ class ArgTypeExpander:
                 return actual_type
             else:
                 return AnyType(TypeOfAny.from_error)
-
         else:
             assert False, f"unexpected actual kind {actual_kind}"
-
-    def parse_star_argument(self, star_arg: Type, /) -> TupleType:
-        r"""Parse the type of ``*args`` argument into a tuple type.
-
-        Note: For star parameters, use `parse_star_parameter` instead.
-        """
-        tnf = TupleNormalForm.from_star_arg(star_arg)
-        return tnf.materialize(self.context)
-
-    def parse_star_parameter(self, star_param: Type, /) -> TupleType:
-        r"""Parse the type of a ``*args: T`` annotation into a tuple type.
-
-        Note: For star arguments, use `parse_star_argument` instead.
-
-        Note: mypy in an earlier analysis phase wraps converts these annotations:
-
-        Examples:
-            - ``*args: int`` --> ``int`` --> ``Instance(tuple_type, [int])``
-            - ``*args: P.args`` --> ``ParamSpecType`` --> ``TupleType[Unpack[ParamSpecType]]``
-            - ``*args: *tuple[int, int]`` --> ``UnpackType[TupleType[[int, int]]]`` --> ``TupleType[int, int]``
-            - ``*args: *Ts`` --> ``UnpackType[TypeVarTupleType]`` --> ``TupleType[Unpack[TypeVarTupleType]]``
-            - ``*args: *tuple[int, ...]`` --> ``UnpackType[TupleType[[int, ...]]]`` --> ``TupleType[Unpack[Instance(tuple_type, [int])]]``
-        """
-        p_t = get_proper_type(star_param)
-        if isinstance(p_t, UnpackType):
-            unpacked = get_proper_type(p_t.type)
-            if isinstance(unpacked, TupleType):
-                return unpacked
-            return TupleType([p_t], fallback=self.context.fallback_tuple)
-
-        elif isinstance(p_t, ParamSpecType):
-            # we put the ParamSpecType here inside
-            parsed = UnpackType(p_t)
-            return TupleType([parsed], fallback=self.context.fallback_tuple)
-
-        else:  # e.g. *args: int  --> *args: *tuple[int, ...]
-            parsed = UnpackType(self.context.make_tuple_instance_type(p_t))
-            return TupleType([parsed], fallback=self.context.fallback_tuple)
-
-    def expand_all_actuals_and_formal_star_arg(self, actual_types, actual_kinds, formal_type):
-        r"""
-        option 1 iterate over the formal_to_actual
-        option 2 iterate over the actuals, and keep track of which formal we are at.
-        option 3 iterate over the formals, and keep track of which actual we are at.
-        in any case we also need like 1 tuple index per actual, although it only
-        really matters for the critical argument.
-        may it is better to rewrite the errors:
-        argument X to fn has incompatible type, got X but expected Y (POS to POS
-        argument X to fn has incompatible type, got *(....) but expected Y (STAR to POS)
-        argument X to fn has incompatible type, got X but expected *(...) (POS to STAR)
-        argument X to fn has incompatible type, got *(...) but expected *(...) (STAR to STAR)
-
-        IMPORTANT: on the callee side, at most ARG_STAR can be variadic (but it doesn't have to)
-        in this case, we know all variadic positional arguments must be mapped to this single ARG_STAR
-        the leading callers STAR_ARG can also be mapped to a number of preceding positionals arguments.
-
-        case: the formal definition is bounded and the actual definition is bonded:
-        represent the formal in TNF as tuple[T1, ..., Tk]
-        represent the actual in TNF as tuple[P1, ..., Pn]
-        if n > k, raise a too many arguments error
-        if n < k, raise a too few arguments error
-        compare the first min(n, k) items one by one.
-
-        case: the formal definition is bounded, but the actual arguments are unbounded.
-        represent formal in TNF as tuple[T1, ..., Tk]
-        represent actual in TNF as tuple[P1, ..., Pn, *Vs, Q1, ..., Qm]
-        Then in n+m > k, raise a too many arguments error.
-        otherwise, compare the first n-many items to the prefix (actually, min(n,k)-many)
-                 , the last m-many items to the suffix (actually min(m, k-min(n,k))-many)
-                 , and all other items to the unpacked *Vs.
-
-        case: the formal definition is unbounded, but the actual definition is bounded:
-        represent formal in TNF as tuple[P1, ..., Pn, *Vs, S1, ..., Sm]
-        represent actual in TNF as tuple[T1, ..., Tk]
-        Then in k < n+m, raise a too few arguments error.
-        otherwise, compare the first n-many items to the prefix
-                 , the last m-many items to the suffix
-                 , and all other items to the unpacked *Vs.
-
-        case: both the formal definition and the actual definition are unbounded:
-        represent formal in TNF as tuple[P1, ..., Pn, *Vs, S1, ..., Sm]
-        represent actual in TNF as tuple[T1, ..., Tk, *Us, Q1, ..., Ql]
-        Then:
-        - compare the first min(n, k) many items one by one.
-        - compare the last min(m, l) many items one by one.
-
-        For the remaining items, there are 4 cases:
-        formal                                     actual
-        tuple[P1, ..., Pn, *Vs, S1, ..., Sm]  and  tuple[*Us]
-        tuple[*Vs, S1, ..., Sm]               and  tuple[T1, ..., Tn, *Us]
-        tuple[P1, ..., Pn, *Vs]               and  tuple[*Us, Q1, ..., Qm]
-        tuple[*Vs]                            and  tuple[T1, ..., Tn, *Us, Q1, ..., Qm]
-        check these according to the rules above.
-        """

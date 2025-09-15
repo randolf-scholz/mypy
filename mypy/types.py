@@ -2487,14 +2487,6 @@ class CallableType(FunctionLike):
             types_middle = unpacked.items
             kinds_middle = [ARG_POS] * len(unpacked.items)
             names_middle = [no_name] * len(unpacked.items)
-        elif False:
-            unpacked = unpacked.simplify()
-            if isinstance(unpacked, Instance) and unpacked.type.fullname == "builtins.tuple":
-                # *Tuple[X, ...] -> *X
-                new_unpack = unpacked.args[0]
-            else:
-                new_unpack = UnpackType(unpacked)
-            return self.copy_modified(arg_types=types_prefix + [new_unpack] + types_suffix)
         else:
             # *Tuple[X, *Ts, Y, Z] or *Tuple[X, *tuple[T, ...], X, Z], here
             # we replace the prefix by ARG_POS (this is how some places expect

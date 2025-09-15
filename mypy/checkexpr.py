@@ -5425,7 +5425,8 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
 
         # renormalize the items, combining multiple unpacks if needed.
         tnf = TupleNormalForm.from_items(items)
-        result = tnf.materialize(context=self.argument_infer_context()).simplify()
+        result = tnf.materialize(context=self.argument_infer_context())
+        result = result.simplify()  # simplify tuple[*Ts] -> Ts, etc.
 
         if seen_unpack_in_items:
             # Return already normalized tuple type just in case.

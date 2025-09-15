@@ -92,6 +92,7 @@ class TupleHelper:
         r"""Upcast a subtype of tuple[T, ...] to tuple[T, ...]."""
         if not self.is_tuple_instance_subtype(typ):
             raise ValueError(f"Type {typ} is not a subtype of tuple[T, ...]")
+
         # TODO: does this always give the same result as the solver?
         tuple_instance = map_instance_to_supertype(typ, self.tuple_typeinfo)
         return cast("TupleInstanceType", tuple_instance)
@@ -114,15 +115,10 @@ class TupleHelper:
             if isinstance(item, UnpackType):
                 unpacked = get_proper_type(item.type)
                 if self.is_tuple_instance_type(unpacked):
-                    # unpacked is tuple[T, ...], return T
                     item_types.append(unpacked.args[0])
                 elif isinstance(unpacked, TypeVarTupleType):
-                    # unpacked is a TypeVarTuple, return Any
                     item_types.append(AnyType(TypeOfAny.from_omitted_generics))
                 elif isinstance(unpacked, ParamSpecType):
-                    # assert (
-                    #     unpacked.flavor == ParamSpecFlavor.ARGS
-                    # ), f"items={items}, {unpacked.flavor=}"
                     item_types.append(AnyType(TypeOfAny.from_omitted_generics))
                 else:
                     assert False, f"Unexpected unpacked type: {unpacked}"

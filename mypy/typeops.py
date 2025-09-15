@@ -102,7 +102,8 @@ def tuple_fallback(typ: TupleType) -> Instance:
     info = typ.partial_fallback.type
     if info.fullname != "builtins.tuple":
         return typ.partial_fallback
-    items = []
+
+    items: list[Type] = []
     for item in typ.items:
         if isinstance(item, UnpackType):
             unpacked_type = get_proper_type(item.type)

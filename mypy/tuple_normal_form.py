@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 from itertools import chain
-from typing import TYPE_CHECKING, NamedTuple, NewType, cast
+from typing import TYPE_CHECKING, Callable, NamedTuple, NewType, cast
 from typing_extensions import TypeAlias as _TypeAlias, TypeGuard, TypeIs
 
 from mypy.maptype import map_instance_to_supertype
@@ -28,12 +28,6 @@ from mypy.types import (
 if TYPE_CHECKING:
     from mypy.infer import ArgumentInferContext
 
-
-def show(*args: object) -> None:
-    if False:
-        print(*args)
-
-
 # TODO: Actually properly define VariadicType if ever `UnpackType` and `UnionType` are made generic.
 #     type VariadicType = UnpackType[TypeList | UnionType[VariadicType]]
 VariadicType = NewType("VariadicType", UnpackType)
@@ -44,7 +38,7 @@ FiniteTuple = NewType("FiniteTuple", TupleType)
 """Represents an instance of `tuple[T1, T2, ..., Tn]` with a finite number of items."""
 TupleLikeType: _TypeAlias = "TupleType | TypeVarTupleType | TupleInstanceType | FiniteTuple"
 r"""Types that are considered tuples or tuple-like."""
-AbstractUnpackType = NewType("AbstractUnpackType", UnpackType)
+DirtyUnpackType = NewType("DirtyUnpackType", UnpackType)
 r"""An UnpackType that may contain unexpected members, such as TypeList or UnionType."""
 TupleInstanceType = NewType("TupleInstanceType", Instance)
 """Represents an instance of `tuple[T, ...]`."""
@@ -90,13 +84,15 @@ class TupleHelper:
         p_t = get_proper_type(typ)
         return isinstance(p_t, Instance) and p_t.type == self.tuple_typeinfo
 
-    def is_tuple_instance_subtype(self, typ: Type) -> bool:
+    def is_tuple_instance_subtype(self, typ: Type) -> TypeGuard[Instance]:
         """Check if the type is a subtype of tuple[T, ...] for some T."""
         from mypy.subtypes import is_subtype
 
-        if not isinstance(typ, Instance):
+        p_t = get_proper_type(typ)
+
+        if not isinstance(p_t, Instance):
             return False
-        if typ.type == self.tuple_typeinfo:
+        if p_t.type == self.tuple_typeinfo:
             return True
         # otherwise, check if it is a subtype of tuple[Any, ...]
         return is_subtype(typ, self.std_tuple)
@@ -106,7 +102,8 @@ class TupleHelper:
         if not self.is_tuple_instance_subtype(typ):
             raise ValueError(f"Type {typ} is not a subtype of tuple[T, ...]")
         # TODO: does this always give the same result as the solver?
-        return map_instance_to_supertype(typ, self.tuple_typeinfo)
+        tuple_instance = map_instance_to_supertype(typ, self.tuple_typeinfo)
+        return cast(TupleInstanceType, tuple_instance)
 
     def make_tuple_instance_type(self, arg: Type, /) -> TupleInstanceType:
         """Create a TupleInstance type with the given argument type."""
@@ -264,12 +261,11 @@ class TupleHelper:
         suffix_length = len(tup.suffix)
 
         # clip start and stop to the valid range [-suffix_length, +prefix_length]
-        clip = lambda x: max(min(-suffix_length, -1), min(x, prefix_length))
+        clip: Callable[[int], int] = lambda x: max(min(-suffix_length, -1), min(x, prefix_length))
         start = None if start is None else clip(start)
         stop = None if stop is None else clip(stop)
-        step = 1 if step is None else step
 
-        if (start is None and start >= 0) and (stop is not None and stop >= 0):
+        if (start is None or start >= 0) and (stop is not None and stop >= 0):
             start = 0 if start is None else start
             items = [
                 proper_items[i] if i < prefix_length else iterable_type
@@ -309,7 +305,7 @@ def _is_empty_unpack(typ: Type, /) -> TypeGuard[UnpackType]:
     content = get_proper_type(proper_arg.type)
     if isinstance(content, UninhabitedType):
         return True
-    elif isinstance(content, TypeList | UnionType | TupleType):
+    elif isinstance(content, (TypeList, UnionType, TupleType)):
         return all(_is_empty_unpack(item) for item in content.items)
     # fallback: TypeVarTupleType, tuple[T, ...], list[T], etc.
     # TODO: should we try converting to Iterable[T] and check if T is UninhabitedType?
@@ -325,7 +321,7 @@ def _is_non_empty_unpack(typ: Type, /) -> TypeGuard[UnpackType]:
     content = get_proper_type(proper_arg.type)
     if isinstance(content, UninhabitedType):
         return False
-    elif isinstance(content, TypeList | UnionType | TupleType):
+    elif isinstance(content, (TypeList, UnionType, TupleType)):
         return any(_is_non_empty_unpack(item) for item in content.items)
     # fallback: TypeVarTupleType, tuple[T, ...], list[T], etc.
     # TODO: should we try converting to Iterable[T] and check if T is UninhabitedType?
@@ -367,14 +363,9 @@ class TupleNormalForm(NamedTuple):
         - suffix: the longest statically known finite suffix of the remaining tuple
     """
 
-    prefix: Sequence[ProperType]
-    variadic: UnpackType
-    suffix: Sequence[ProperType]
-
-    # def __init__(self, prefix: Sequence[ProperType], variadic, suffix: Sequence[ProperType]) -> None:
-    #     self.prefix = prefix
-    #     self.variadic = variadic
-    #     self.suffix = suffix
+    prefix: Sequence[Type]
+    variadic: DirtyUnpackType
+    suffix: Sequence[Type]
 
     @property
     def is_variadic(self) -> bool:
@@ -410,7 +401,7 @@ class TupleNormalForm(NamedTuple):
         elif isinstance(p_t, ParamSpecType):
             # ParamSpecType is always variadic
             variadic_part = UnpackType(p_t, from_star_syntax=True)
-            return TupleNormalForm([], variadic_part, [])
+            return TupleNormalForm([], DirtyUnpackType(variadic_part), [])
         else:
             # otherwise we have an annotation like `*args: int`
             # this should be treated as if it were `*args: *tuple[int, ...]`
@@ -418,7 +409,7 @@ class TupleNormalForm(NamedTuple):
             # despite being conceptually equal to a single item, during materialization
             # this will be converted back to tuple[int, ...] in
             variadic_part = UnpackType(TypeList([p_t]), from_star_syntax=True)
-            return TupleNormalForm([], variadic_part, [])
+            return TupleNormalForm([], DirtyUnpackType(variadic_part), [])
 
     @staticmethod
     def from_star_arg(star_arg: Type, /) -> TupleNormalForm:
@@ -473,7 +464,7 @@ class TupleNormalForm(NamedTuple):
         # wrap it in UnpackType[TypeList].
         else:
             variadic_part = UnpackType(star_arg, from_star_syntax=True)
-            return TupleNormalForm([], variadic_part, [])
+            return TupleNormalForm([], DirtyUnpackType(variadic_part), [])
 
     @staticmethod
     def from_tuple_type(typ: TupleType, /) -> TupleNormalForm:
@@ -501,9 +492,9 @@ class TupleNormalForm(NamedTuple):
 
     @staticmethod
     def from_items(items: Iterable[Type], /) -> TupleNormalForm:
-        head_items: list[ProperType] = []
-        tail_items: list[ProperType] = []
-        body_items: list[ProperType] = []
+        head_items: list[Type] = []
+        tail_items: list[Type] = []
+        body_items: list[Type] = []
         seen_variadic = False
 
         # determine the head, body and tail parts
@@ -524,7 +515,7 @@ class TupleNormalForm(NamedTuple):
         # the variadic part is the unpacking of the concatenation of all body items
         # formally represented by a UnpackType[TypeList[...]]
         body = UnpackType(TypeList(body_items), from_star_syntax=True)
-        return TupleNormalForm(head_items, body, tail_items)
+        return TupleNormalForm(head_items, DirtyUnpackType(body), tail_items)
 
     @staticmethod
     def combine_union(args: Sequence[TupleNormalForm], /) -> TupleNormalForm:
@@ -572,17 +563,18 @@ class TupleNormalForm(NamedTuple):
             tuple[int, int] | tuple[*tuple[int, ...], int]
                 --> [], [[[int], [*tuple[int, ...]]], [int]
         """
-        heads: list[list[ProperType]]
-        bodies: list[UnpackType]
-        tails: list[list[ProperType]]
-        remaining_head_items: list[list[ProperType]]
-        remaining_tail_items: list[list[ProperType]]
-        remaining_body_items: list[list[ProperType]]
-        target_head_items: list[ProperType] = []
-        target_tail_items: list[ProperType] = []
-
         # split each tuple
+        heads: tuple[list[Type], ...]
+        bodies: tuple[UnpackType, ...]
+        tails: tuple[list[Type], ...]
         heads, bodies, tails = zip(*args)
+
+        # setup
+        remaining_head_items: list[list[Type]]
+        remaining_tail_items: list[list[Type]]
+        remaining_body_items: list[list[Type]]
+        target_head_items: list[Type] = []
+        target_tail_items: list[Type] = []
 
         # 1. process all heads in parallel, stopping when one of the heads is exhausted
         shared_head_length = min(len(head) for head in heads)
@@ -632,9 +624,12 @@ class TupleNormalForm(NamedTuple):
         joined_bodies = UnionType.make_union(
             [UnpackType(TypeList(body_items)) for body_items in remaining_body_items]
         )
+        variadic_part = UnpackType(joined_bodies, from_star_syntax=True)
 
         # 5. combine all parts into a TupleNormalForm
-        return TupleNormalForm(target_head_items, UnpackType(joined_bodies), target_tail_items)
+        return TupleNormalForm(
+            target_head_items, DirtyUnpackType(variadic_part), target_tail_items
+        )
 
     @staticmethod
     def combine_concat(tnfs: Sequence[TupleNormalForm]) -> TupleNormalForm:
@@ -643,7 +638,7 @@ class TupleNormalForm(NamedTuple):
         essentially converts ``(*x1, ..., *xn)`` -> ``*x` where x = [*x1, ..., *xn]``
         """
         if len(tnfs) == 0:
-            return TupleNormalForm([], UnpackType(UninhabitedType()), [])
+            return TupleNormalForm([], DirtyUnpackType(UnpackType(UninhabitedType())), [])
 
         if len(tnfs) == 1:
             return tnfs[0]
@@ -663,9 +658,7 @@ class TupleNormalForm(NamedTuple):
         and `typing.Iterable`, we require the caller to provide an `ArgumentInferContext`.
         """
         helper = _TupleConstructor(context)
-        result = helper.make_tuple_type(self)
-        show(f"Materialized TupleNormalForm\n\t{self}\n\t{result}")
-        return result
+        return helper.make_tuple_type(self)
 
 
 class _TupleConstructor:
@@ -687,7 +680,6 @@ class _TupleConstructor:
         # parse the variadic part. UninhabitedType indicated no variadic part.
         # AnyType indicates we could not properly parse the variadic part.
         parsed_variadic_part = self.parse_variadic_type(tnf.variadic)
-        show(tnf, parsed_variadic_part)
 
         # check whether the unpack is considered empty
         unpacked = get_proper_type(parsed_variadic_part.type)
@@ -732,8 +724,12 @@ class _TupleConstructor:
         item_types: list[Type] = []
         for item in parsed_items:
             if isinstance(item, UnpackType):
+                # cast to Iterable[T] (or Any.from_error)
                 iterable_type = self.context.as_iterable_type(item.type)
-                item_types.append(iterable_type.args[0])
+                item_type = (
+                    iterable_type.args[0] if isinstance(iterable_type, Instance) else iterable_type
+                )
+                item_types.append(item_type)
             else:
                 item_types.append(item)
         unified_item_type = make_simplified_union(item_types)
@@ -767,23 +763,22 @@ class _TupleConstructor:
         # more than one unpack: cast every member as Iterable[T] and unify the T's
         item_types: list[Type] = []
         for item in parsed_items:
-            if isinstance(item, UnpackType):
-                iterable_type = self.context.as_iterable_type(item.type)
-                item_types.append(iterable_type.args[0])
-            else:
-                item_types.append(item)
+            # cast to Iterable[T] (or Any.from_error)
+            iterable_type = self.context.as_iterable_type(item.type)
+            item_type = (
+                iterable_type.args[0] if isinstance(iterable_type, Instance) else iterable_type
+            )
+            item_types.append(item_type)
         unified_item_type = make_simplified_union(item_types)
         return UnpackType(self.context.make_tuple_instance_type(unified_item_type))
 
-    def _unify_multiple_unpacks(self, items: list[ProperType]) -> list[ProperType]:
+    def _unify_multiple_unpacks(self, items: list[Type]) -> list[Type]:
         r"""If multiple UnpackType are present, unify them into a single Unpack[tuple[T, ...]]."""
-
-        # algorithm very similar to TupleNormalForm.from_items, but now we construct a concrete
-        # type.
+        # algorithm very similar to TupleNormalForm.from_items
         seen_unpacks = 0
-        prefix_items: list[ProperType] = []
-        unpack_items: list[ProperType] = []
-        suffix_items: list[ProperType] = []
+        prefix_items: list[Type] = []
+        unpack_items: list[Type] = []
+        suffix_items: list[Type] = []
 
         for item in flatten_nested_tuples(items):
             if isinstance(item, UnpackType):
@@ -804,8 +799,12 @@ class _TupleConstructor:
         item_types = []
         for item in unpack_items:
             if isinstance(item, UnpackType):
+                # cast to Iterable[T] (or Any.from_error)
                 iterable_type = self.context.as_iterable_type(item.type)
-                item_types.append(iterable_type.args[0])
+                item_type = (
+                    iterable_type.args[0] if isinstance(iterable_type, Instance) else iterable_type
+                )
+                item_types.append(item_type)
             else:
                 item_types.append(item)
 
@@ -813,7 +812,7 @@ class _TupleConstructor:
         unified_unpacked = UnpackType(self.context.make_tuple_instance_type(unified_item_type))
         return [*prefix_items, unified_unpacked, *suffix_items]
 
-    def parse_variadic_type(self, typ: AbstractUnpackType, /) -> UnpackType:
+    def parse_variadic_type(self, typ: UnpackType, /) -> UnpackType:
         r"""Parse the (dirty) UnpackType of a TupleNormalForm.
 
         A TupleNormalForm's unpack may contain the following unexpected types:
@@ -851,96 +850,3 @@ class _TupleConstructor:
         if isinstance(r, AnyType):
             return UnpackType(self.context.make_tuple_instance_type(r))
         return UnpackType(self.context.make_tuple_instance_type(r.args[0]))
-
-
-def all_tuples(types: Sequence[ProperType]) -> TypeGuard[Sequence[TupleType]]:
-    """Check if all types are tuples."""
-    return all(isinstance(typ, TupleType) for typ in types)
-
-
-def is_equal_sized_tuples(types: Sequence[ProperType]) -> TypeGuard[Sequence[TupleType]]:
-    """Check if all types are tuples of the same size.
-
-    We use `flatten_nested_tuples` to deal with nested tuples.
-    Note that the result may still contain
-    """
-    if not types:
-        return True
-
-    iterator = iter(types)
-    typ = next(iterator)
-    if not isinstance(typ, TupleType):
-        return False
-    flattened_elements = flatten_nested_tuples(typ.items)
-    if any(
-        isinstance(get_proper_type(member), (UnpackType, TypeVarTupleType))
-        for member in flattened_elements
-    ):
-        # this can happen e.g. with tuple[int, *tuple[int, ...], int]
-        return False
-    size = len(flattened_elements)
-
-    for typ in iterator:
-        if not isinstance(typ, TupleType):
-            return False
-        flattened_elements = flatten_nested_tuples(typ.items)
-        if len(flattened_elements) != size or any(
-            isinstance(get_proper_type(member), (UnpackType, TypeVarTupleType))
-            for member in flattened_elements
-        ):
-            # this can happen e.g. with tuple[int, *tuple[int, ...], int]
-            return False
-    return True
-
-
-def normalize_finite_tuple_type(typ: FiniteTuple) -> FiniteTuple:
-    """Normalize a tuple type to a FiniteTupleType."""
-    t = TupleType(flatten_nested_tuples(typ.items), fallback=typ.partial_fallback)
-    return FiniteTuple(t)
-
-
-def is_tuple_instance_type(typ: Type) -> TypeIs[TupleInstanceType]:
-    """Check if the type is an instance of `tuple[T, ...]`."""
-    p_t = get_proper_type(typ)
-    return isinstance(p_t, Instance) and p_t.type.fullname == "builtins.tuple"
-
-
-def is_tuple_like_type(typ: Type) -> TypeIs[TupleLikeType]:
-    """Check if the type is a tuple-like type."""
-    p_t = get_proper_type(typ)
-    return isinstance(p_t, TupleType | TypeVarTupleType) or is_tuple_instance_type(p_t)
-
-
-def is_finite_tuple_type(typ: Type) -> TypeIs[FiniteTuple]:
-    """Check if the type is a finite tuple type."""
-    p_t = get_proper_type(typ)
-
-    if not isinstance(p_t, TupleType):
-        return False
-    return get_real_tuple_length(p_t) >= 0
-
-
-def get_real_tuple_length(typ: TupleLikeType) -> int:
-    r"""Get the length of a tuple type, or -1 if it is unbounded."""
-    p_t = get_proper_type(typ)
-    if isinstance(p_t, TypeVarTupleType):
-        # use the upper bound of the TypeVarTuple to determine the length
-        return get_real_tuple_length(p_t.upper_bound)
-    if is_tuple_instance_type(p_t):
-        # tuple[T, ...] is always unbounded, so return -1
-        return -1
-    if isinstance(p_t, TupleType):
-        size = 0
-        for item in p_t.items:
-            proper_item = get_proper_type(item)
-            if isinstance(proper_item, UnpackType):
-                unpacked = get_proper_type(proper_item.type)
-                assert is_tuple_like_type(unpacked)
-                result = get_real_tuple_length(unpacked)
-                if result == -1:
-                    return -1
-                size += result
-            else:
-                size += 1
-        return size
-    raise TypeError(f"Unexpected type for tuple length: {typ}")

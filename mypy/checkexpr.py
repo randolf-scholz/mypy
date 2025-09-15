@@ -2682,10 +2682,9 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                     if actual_kind == ARG_POS:
                         actual_size = 1
                     elif actual_kind == ARG_STAR:
-                        assert isinstance(
-                            expanded_actual, TupleType
-                        ), f"expected tuple, got {expanded_actual}"
-                        actual_size = expanded_actual.minimum_length
+                        p_e = get_proper_type(expanded_actual)
+                        assert isinstance(p_e, TupleType)
+                        actual_size = p_e.minimum_length
                     else:
                         assert False, f"Unexpected argument kind in *args {actual_kind}"
 
@@ -2721,18 +2720,17 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
 
                     if current.actual_kind == ARG_POS:
                         expected_type = tuple_helper.get_item(formal_tuple, formal_prefix_index)
+                        assert expected_type is not None, "formal_tuple unexpectedly exhausted"
                         formal_prefix_index += 1
                         expected_prefix_types.append(expected_type)
 
                     elif current.actual_kind == ARG_STAR:
-                        assert isinstance(current.expanded_type, TupleType)
+                        p_e = get_proper_type(current.expanded_type)
+                        assert isinstance(p_e, TupleType)
                         # check the size of the actual. If it is variadic or larger than the remaining prefix,
                         # put it back into the queue and break
-                        size = current.expanded_type.minimum_length
-                        if (
-                            current.expanded_type.is_variadic
-                            or formal_prefix_index + size > formal_prefix_length
-                        ):
+                        size = p_e.minimum_length
+                        if p_e.is_variadic or formal_prefix_index + size > formal_prefix_length:
                             actual_queue.appendleft(current)
                             break
                         # otherwise, determine the expected type and append it.
@@ -2756,18 +2754,17 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                         expected_type = tuple_helper.get_item(
                             formal_tuple, -formal_suffix_index - 1
                         )
+                        assert expected_type is not None, "formal_tuple unexpectedly exhausted"
                         formal_suffix_index += 1
                         expected_suffix_types.appendleft(expected_type)
 
                     elif current.actual_kind == ARG_STAR:
-                        assert isinstance(current.expanded_type, TupleType)
+                        p_e = get_proper_type(current.expanded_type)
+                        assert isinstance(p_e, TupleType)
                         # check the size of the actual. If it is variadic or larger than the remaining suffix,
                         # put it back into the queue and break
-                        size = current.expanded_type.minimum_length
-                        if (
-                            current.expanded_type.is_variadic
-                            or formal_suffix_index + size > formal_suffix_length
-                        ):
+                        size = p_e.minimum_length
+                        if p_e.is_variadic or formal_suffix_index + size > formal_suffix_length:
                             actual_queue.append(current)
                             break
                         # otherwise, we can consume it
@@ -2789,13 +2786,15 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
 
                     if current.actual_kind == ARG_POS:
                         expected_type = tuple_helper.get_item(formal_tuple, formal_prefix_index)
+                        assert expected_type is not None, "formal_tuple unexpectedly exhausted"
                         expected_middle_types.append(expected_type)
                         formal_prefix_index += 1
 
                     elif current.actual_kind == ARG_STAR:
-                        assert isinstance(current.expanded_type, TupleType)
-                        prefix_size = len(current.expanded_type.prefix)
-                        suffix_size = len(current.expanded_type.suffix)
+                        p_e = get_proper_type(current.expanded_type)
+                        assert isinstance(p_e, TupleType)
+                        prefix_size = len(p_e.prefix)
+                        suffix_size = len(p_e.suffix)
                         expected_type = tuple_helper.get_slice(
                             formal_tuple,
                             start=formal_prefix_index,
@@ -7098,21 +7097,6 @@ def _validate_formal_to_actual(
             assert False, f"Unexpected formal kind {formal_kind}"
 
 
-def _find_first_named_arg(kinds: list[ArgKind]) -> int:
-    """Find the index of the first named argument, or len(kinds) if none."""
-    for i, k in enumerate(kinds):
-        if k in (ARG_NAMED, ARG_STAR2):
-            return i
-    return len(kinds)
-
-
-def _find_first_unbounded_tuple(tuples: list[TupleType]) -> int | None:
-    for i, t in enumerate(tuples):
-        if any(isinstance(t, UnpackType) in t.proper_items):
-            return i
-    return None
-
-
 def is_variadic_tuple(typ: Type) -> bool:
     p_t = get_proper_type(typ)
     return isinstance(p_t, TupleType) and p_t.is_variadic
@@ -7122,5 +7106,5 @@ class _Actual(NamedTuple):
     actual_id: int
     actual_kind: ArgKind
     actual_type: Type
-    expanded_type: ProperType
+    expanded_type: Type
     actual_size: int

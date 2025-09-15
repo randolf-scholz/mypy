@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING, Final, cast
-from typing_extensions import TypeGuard, assert_never
+from typing_extensions import TypeGuard
 
 import mypy.subtypes
 import mypy.typeops
-from mypy.argmap import ArgTypeExpander
+from mypy.argmap import ArgTypeExpander, unparse_star_argument
 from mypy.erasetype import erase_typevars
 from mypy.maptype import map_instance_to_supertype
 from mypy.nodes import (
@@ -146,7 +146,7 @@ def infer_constraints_for_callable(
         actual_arg_types: list[Type] = []
         actual_arg_kinds: list[ArgKind] = []
         actual_arg_names: list[str | None] = []
-        expanded_actuals: list[ProperType] = []
+        expanded_actuals: list[Type] = []
 
         for actual in actuals:
             actual_arg_type = arg_types[actual]
@@ -187,18 +187,9 @@ def infer_constraints_for_callable(
                     param_spec_arg_kinds.append(ARG_POS)
                     param_spec_arg_names.append(actual_name)
                 elif actual_kind == ARG_STAR:
-                    assert isinstance(expanded_actual, TupleType)
-
-                    # simplify the tuple type if possible
-                    expanded_actual = expanded_actual.simplify()
-                    if (
-                        isinstance(expanded_actual, Instance)
-                        and expanded_actual.type.fullname == "builtins.tuple"
-                    ):
-                        # treat *tuple[T, ...] as if it were T
-                        # TODO: shouldn't this normalization be moved into the constructor of ParamSpecType?
-                        expanded_actual = expanded_actual.args[0]
-
+                    # TODO: shouldn't this re-normalization be done in the constructor
+                    # of types.Parameters?
+                    expanded_actual = unparse_star_argument(expanded_actual)
                     param_spec_arg_types.append(expanded_actual)
                     param_spec_arg_kinds.append(actual_kind)
                     param_spec_arg_names.append(actual_name)
@@ -208,19 +199,20 @@ def infer_constraints_for_callable(
                     param_spec_arg_names.append(actual_name)
                 else:
                     # ARG_OPT/ARG_NAMED_OPT is not possible for actuals
-                    assert_never(actual_kind)
+                    assert False, f"Unexpected actual kind {actual_kind}"
 
         elif formal_kind == ARG_STAR:
             # combine all the actuals into a single tuple type
-            items = []
-            for e, kind in zip(expanded_actuals, actual_arg_kinds):
-                if kind == ARG_STAR:
-                    assert isinstance(e, TupleType)
-                    items.extend(e.items)
-                elif kind == ARG_POS:
+            items: list[Type] = []
+            for e, actual_kind in zip(expanded_actuals, actual_arg_kinds):
+                if actual_kind == ARG_STAR:
+                    p_e = get_proper_type(e)
+                    assert isinstance(p_e, TupleType)
+                    items.extend(p_e.items)
+                elif actual_kind == ARG_POS:
                     items.append(e)
                 else:
-                    assert_never(kind)
+                    assert False, f"Unexpected actual kind {actual_kind}"
 
             # concatenate all these tuples into a normalized tuple type
             actual_tuple = context.make_tuple_type(items)
@@ -244,7 +236,7 @@ def infer_constraints_for_callable(
                 c = infer_constraints(formal_type, expanded_actual, SUPERTYPE_OF)
                 constraints.extend(c)
         else:
-            assert_never(formal_kind)
+            assert False, f"Unexpected formal kind {formal_kind}"
     if (
         param_spec
         and not any(c.type_var == param_spec.id for c in constraints)
@@ -1021,23 +1013,21 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
             #     ]
 
             constraints: list[Constraint] = []
-            for item in actual.proper_items:
+            for item in actual.flattened_items:
                 if isinstance(item, UnpackType):
                     unpacked = get_proper_type(item.type)
                     if isinstance(unpacked, TypeVarTupleType):
                         # tuple[T, ...] :> tuple[*Ts] implies T :> Union[*Ts]
                         # Since Union[*Ts] is currently not available, use Any instead.
-                        item_type = AnyType(TypeOfAny.from_omitted_generics)
+                        item = AnyType(TypeOfAny.from_omitted_generics)
                     elif (
                         isinstance(unpacked, Instance)
                         and unpacked.type.fullname == "builtins.tuple"
                     ):
-                        item_type = unpacked.args[0]
+                        item = unpacked.args[0]
                     else:
                         raise TypeError(f"Unexpected unpack type {unpacked}")
-                else:
-                    item_type = item
-                constraints += infer_constraints(generic_type, item_type, self.direction)
+                constraints += infer_constraints(generic_type, item, self.direction)
             return constraints
         elif isinstance(actual, TupleType):
             # NOTE: tuple[T, ...] <: tuple[A, B, C] has no proper solution but we still infer T <: A, T <: B, T <: C

@@ -141,9 +141,9 @@ class ArgumentInferContext(NamedTuple):
             # TODO: add a 'fast path' (needs measurement) that uses the map_instance_to_supertype
             #   mechanism? (Only if it works: gh-19662)
             return self._solve_as_iterable(p_t)
-        # return AnyType(TypeOfAny.from_error)
-        error_type = AnyType(TypeOfAny.from_error)
-        return self.make_iterable_instance_type(error_type)
+
+        # failure case, return AnyType
+        return AnyType(TypeOfAny.from_error)
 
     def _solve_as_iterable(self, typ: Type, /) -> IterableType | AnyType:
         r"""Use the solver to cast a type as Iterable[T].

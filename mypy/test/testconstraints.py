@@ -34,11 +34,11 @@ class ConstraintsSuite(Suite):
         # 1. create class A[T](NamedTuple): a: T; b: T; c: T
         namedtuplei = self.fx.make_type_info("NamedTuple", module_name="typing")
         ai = self.fx.make_type_info(
-            "A", typevars=[self.fx.t], mro=[namedtuplei, self.fx.std_tuplei, self.fx.oi]
+            "A", typevars=[self.fx.t.name], mro=[namedtuplei, self.fx.std_tuplei, self.fx.oi]
         )
         # 2. Create a class MyTuple[T](tuple[T, ...])
         bi = self.fx.make_type_info(
-            "MyTuple", typevars=[self.fx.t], mro=[self.fx.std_tuplei, self.fx.oi]
+            "MyTuple", typevars=[self.fx.t.name], mro=[self.fx.std_tuplei, self.fx.oi]
         )
 
         infer_constraints(Instance(ai, [self.fx.t]), Instance(bi, [self.fx.t]), SUBTYPE_OF)

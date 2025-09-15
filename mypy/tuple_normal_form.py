@@ -153,7 +153,7 @@ class TupleHelper:
         if unpack_index is None:
             return None
 
-        item = tup.proper_items[unpack_index]
+        item = tup.flattened_items[unpack_index]
         assert isinstance(item, UnpackType)
 
         return self._get_variadic_item_type_from_unpack(item)
@@ -187,20 +187,20 @@ class TupleHelper:
         If the tuple has no variadic part, then it works just like regular indexing,
         but returns None if the index is out of bounds.
         """
-        proper_items = tup.proper_items
+        flattened_items = tup.flattened_items
         unpack_index = tup.unpack_index
 
         if unpack_index is None:
             try:
-                return proper_items[index]
+                return flattened_items[index]
             except IndexError:
                 return None
 
-        N = len(proper_items)
+        N = len(flattened_items)
         if unpack_index - N < index < unpack_index:
-            return proper_items[index]
+            return flattened_items[index]
 
-        item = proper_items[unpack_index]
+        item = flattened_items[unpack_index]
         assert isinstance(item, UnpackType)
         return self._get_variadic_item_type_from_unpack(item)
 
@@ -236,13 +236,14 @@ class TupleHelper:
           just do regular slicing
         - If they traverse the variadic part, create two slices and glue them with the variadic part in between.
         """
-        proper_items = tup.proper_items
+        # NOTE: This works differently from TupleType.slice!
+        flattened_items = tup.flattened_items
         unpack_index = tup.unpack_index
 
         if unpack_index is None:
-            return self.make_tuple_type(proper_items[start:stop:step])
+            return self.make_tuple_type(flattened_items[start:stop:step])
 
-        variadic_part = proper_items[unpack_index]
+        variadic_part = flattened_items[unpack_index]
         assert isinstance(variadic_part, UnpackType)
         iterable_type = self._get_variadic_item_type_from_unpack(variadic_part)
 
@@ -257,25 +258,25 @@ class TupleHelper:
         if (start is None or start >= 0) and (stop is not None and stop >= 0):
             start = 0 if start is None else start
             items = [
-                proper_items[i] if i < prefix_length else iterable_type
+                flattened_items[i] if i < prefix_length else iterable_type
                 for i in range(start, stop, step)
             ]
         elif (start is None or start >= 0) and (stop is None or stop < 0) and step == 1:
             items = [
-                *proper_items[start:unpack_index:step],
+                *flattened_items[start:unpack_index:step],
                 variadic_part,
-                *proper_items[unpack_index + 1 : stop : step],
+                *flattened_items[unpack_index + 1 : stop : step],
             ]
         elif (start is None or start < 0) and (stop is None or stop >= 0) and step == -1:
             items = [
-                *proper_items[start : unpack_index + 1 : step],
+                *flattened_items[start : unpack_index + 1 : step],
                 variadic_part,
-                *proper_items[unpack_index - 1 : stop : step],
+                *flattened_items[unpack_index - 1 : stop : step],
             ]
         elif (start is not None and start < 0) and (stop is None or stop < 0):
             stop = 0 if stop is None else stop
             items = [
-                proper_items[i] if i >= -suffix_length else iterable_type
+                flattened_items[i] if i >= -suffix_length else iterable_type
                 for i in range(start, stop, step)
             ]
         else:

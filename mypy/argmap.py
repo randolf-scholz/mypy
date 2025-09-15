@@ -259,8 +259,9 @@ class ArgTypeExpander:
                 value = UninhabitedType() if value is None else value
 
                 # if the argument is exhausted, reset the index
-                if not star_args_type.is_variadic and self.tuple_index >= len(
-                    star_args_type.proper_items
+                if (
+                    not star_args_type.is_variadic
+                    and self.tuple_index >= star_args_type.minimum_length
                 ):
                     self.tuple_index = 0
                 return value
@@ -318,11 +319,12 @@ def unparse_star_argument(t: Type) -> Type:
     p_t = get_proper_type(t)
     assert isinstance(p_t, TupleType), f"Expected a parsed star argument, got {t}"
     # simplify tuple[*Ts] -> Ts and similar
-    p_t = p_t.simplify()
+    simplified_type = p_t.simplify()
+    proper_simplified = get_proper_type(simplified_type)
 
     # convert tuple[T, ...] to plain T.
-    if isinstance(p_t, Instance):
-        assert p_t.type.fullname == "builtins.tuple"
-        return p_t.args[0]
+    if isinstance(proper_simplified, Instance):
+        assert proper_simplified.type.fullname == "builtins.tuple"
+        return proper_simplified.args[0]
 
-    return p_t
+    return simplified_type

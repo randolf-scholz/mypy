@@ -2631,7 +2631,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
 
                 # parse the formal type as a tuple in TNF
                 formal_tuple = mapper.parse_star_parameter(formal_type)
-                formal_unpack_index = find_unpack_in_list(formal_tuple.proper_items)
+                formal_unpack_index = formal_tuple.unpack_index
                 assert formal_unpack_index is not None, "This was dealt with during normalization"
                 formal_prefix_length = len(formal_tuple.prefix)
                 formal_suffix_length = len(formal_tuple.suffix)

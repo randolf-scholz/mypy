@@ -2907,51 +2907,31 @@ class TupleType(ProperType):
         return TupleType(slice_items, fallback, self.line, self.column, self.implicit)
 
     # TODO: Consider caching these properties.
-
-    @property
-    def proper_items(self) -> list[ProperType]:
-        r"""Return a list of proper types for the items in this tuple (flattened)."""
-        res = []
-        for typ in self.items:
-            p_t = get_proper_type(typ)
-            if isinstance(p_t, UnpackType):
-                unpacked = get_proper_type(p_t.type)
-                if isinstance(unpacked, TupleType):
-                    # recursively expand nested tuples.
-                    res.extend(unpacked.proper_items)
-                else:
-                    # repackage using the proper type.
-                    res.append(UnpackType(unpacked))
-            else:
-                res.append(p_t)
-        return res
-
     @property
     def flattened_items(self) -> list[Type]:
-        r"""Return a list of types for the items in this tuple (flattened)."""
-        res = []
-        for typ in self.items:
-            p_t = get_proper_type(typ)
-            if isinstance(p_t, UnpackType):
-                unpacked = get_proper_type(p_t.type)
-                if isinstance(unpacked, TupleType):
-                    # recursively expand nested tuples.
-                    res.extend(unpacked.flattened_items)
-                else:
-                    res.append(typ)
-            else:
-                res.append(typ)
-        return res
+        r"""Return a list of types for the items in this tuple (flattened).
+
+        Does not expand TypeAliases, except when they are appearing as tuples inside Unpack.
+        """
+        return flatten_nested_tuples(self.items)
 
     @property
     def unpack_index(self) -> int | None:
         r"""The index of the Unpack in the tuple, or None if there is none."""
-        return find_unpack_in_list(self.proper_items)
+        return find_unpack_in_list(self.flattened_items)
 
     @property
-    def prefix(self) -> list[ProperType]:
+    def prefix(self) -> list[Type]:
         r"""The prefix are all items before the first unpack."""
-        return self.proper_items[: self.unpack_index]
+        return self.flattened_items[: self.unpack_index]
+
+    @property
+    def suffix(self) -> list[Type]:
+        r"""The suffix are all items after the last unpack (or none, if no unpack exists)."""
+        unpack_index = self.unpack_index
+        if unpack_index is None:
+            return []
+        return self.flattened_items[unpack_index + 1 :]
 
     @property
     def unpack(self) -> UnpackType | None:
@@ -2959,17 +2939,9 @@ class TupleType(ProperType):
         unpack_index = self.unpack_index
         if unpack_index is None:
             return None
-        unpack = self.proper_items[unpack_index]
+        unpack = self.flattened_items[unpack_index]
         assert isinstance(unpack, UnpackType)
         return unpack
-
-    @property
-    def suffix(self) -> list[ProperType]:
-        r"""The suffix are all items after the last unpack (or none, if no unpack exists)."""
-        unpack_index = self.unpack_index
-        if unpack_index is None:
-            return []
-        return self.proper_items[unpack_index + 1 :]
 
     @property
     def is_variadic(self) -> bool:
@@ -2991,7 +2963,7 @@ class TupleType(ProperType):
         """
         return len(self.prefix) + len(self.suffix)
 
-    def simplify(self) -> TupleType | Instance | TypeVarTupleType | ParamSpecType:
+    def simplify(self) -> Type:
         r"""Simplify a tuple type.
 
         1. expand nested unpacks
@@ -3002,13 +2974,17 @@ class TupleType(ProperType):
             tuple[*Ts]              -> Ts
             tuple[*tuple[int, str]] -> tuple[int, str]
         """
-        proper_items = self.proper_items
-        if len(proper_items) == 1 and isinstance(first_item := proper_items[0], UnpackType):
-            proper_unpacked = get_proper_type(first_item.type)
-            assert isinstance(
-                proper_unpacked, (TupleType, Instance, TypeVarTupleType, ParamSpecType)
-            ), f"{type(first_item.type)=}"
-            return proper_unpacked
+        flattened_items = self.flattened_items
+        if len(flattened_items) == 1:
+            first_item = get_proper_type(flattened_items[0])
+            if isinstance(first_item, UnpackType):
+                proper_unpacked = get_proper_type(first_item.type)
+                assert isinstance(
+                    proper_unpacked, (TupleType, Instance, TypeVarTupleType, ParamSpecType)
+                ), f"{proper_unpacked=}"
+                if isinstance(proper_unpacked, TupleType):
+                    return proper_unpacked.simplify()
+                return first_item.type
         return self
 
 

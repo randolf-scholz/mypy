@@ -670,7 +670,7 @@ class SubtypeVisitor(TypeVisitor[bool]):
         right = self.right
         if isinstance(right, TupleType):
             # simplify tuple[*Ts] -> Ts, etc.
-            right = right.simplify()
+            right = get_proper_type(right.simplify())
         if isinstance(right, TypeVarTupleType) and right.id == left.id:
             return left.min_len >= right.min_len
         return self._is_subtype(left.upper_bound, self.right)
@@ -853,8 +853,8 @@ class SubtypeVisitor(TypeVisitor[bool]):
         Note: the cases where right is fixed or has *Ts unpack should be handled
         by the caller.
         """
-        left_items = left.proper_items
-        right_items = right.proper_items
+        left_items = left.flattened_items
+        right_items = right.flattened_items
         right_unpack_index = right.unpack_index
         left_unpack_index = left.unpack_index
         right_unpack = right.unpack

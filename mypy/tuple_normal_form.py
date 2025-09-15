@@ -12,7 +12,6 @@ from mypy.types import (
     AnyType,
     Instance,
     ParamSpecType,
-    ProperType,
     TupleType,
     Type,
     TypeList,
@@ -26,12 +25,15 @@ from mypy.types import (
 )
 
 if TYPE_CHECKING:
-    from mypy.infer import ArgumentInferContext
+    from mypy.infer import ArgumentInferContext, TupleInstanceType
 
 DirtyUnpackType = NewType("DirtyUnpackType", UnpackType)
 r"""An UnpackType that may contain unexpected members, such as TypeList or UnionType."""
-TupleInstanceType = NewType("TupleInstanceType", Instance)
-"""Represents an instance of `tuple[T, ...]`."""
+
+
+def is_variadic_tuple(typ: Type) -> bool:
+    p_t = get_proper_type(typ)
+    return isinstance(p_t, TupleType) and p_t.is_variadic
 
 
 def get_std_tuple_typeinfo(typ: TupleType, /) -> TypeInfo:
@@ -92,12 +94,12 @@ class TupleHelper:
             raise ValueError(f"Type {typ} is not a subtype of tuple[T, ...]")
         # TODO: does this always give the same result as the solver?
         tuple_instance = map_instance_to_supertype(typ, self.tuple_typeinfo)
-        return cast(TupleInstanceType, tuple_instance)
+        return cast("TupleInstanceType", tuple_instance)
 
     def make_tuple_instance_type(self, arg: Type, /) -> TupleInstanceType:
         """Create a TupleInstance type with the given argument type."""
         value = Instance(self.tuple_typeinfo, [arg])
-        return cast(TupleInstanceType, value)
+        return cast("TupleInstanceType", value)
 
     def make_tuple_type(self, items: Sequence[Type], /) -> TupleType:
         r"""Create a proper TupleType from the given item types."""
@@ -647,196 +649,4 @@ class TupleNormalForm(NamedTuple):
         Since this method needs access to the `TypeInfo` of `builtins.tuple`
         and `typing.Iterable`, we require the caller to provide an `ArgumentInferContext`.
         """
-        helper = _TupleConstructor(context)
-        return helper.make_tuple_type(self)
-
-
-class _TupleConstructor:
-    """Helper class responsible for constructing an actual TupleType from a TupleNormalForm."""
-
-    def __init__(self, context: ArgumentInferContext) -> None:
-        self.context = context
-
-    def make_tuple_type(self, tnf: TupleNormalForm) -> TupleType:
-        r"""Construct an actual TupleType from the TupleNormalForm.
-
-        Combines all members of the variadic part into a single tuple[T, ...] type.
-        This creates an upper bound for the original `star_args` argument.
-
-        Pays special attention to the variadic part, which may contain unexpected
-        `UnpackType` members, namely `UnionType[TypeList]`.
-        """
-
-        # parse the variadic part. UninhabitedType indicated no variadic part.
-        # AnyType indicates we could not properly parse the variadic part.
-        parsed_variadic_part = self.parse_variadic_type(tnf.variadic)
-
-        # check whether the unpack is considered empty
-        unpacked = get_proper_type(parsed_variadic_part.type)
-        is_empty_unpack = isinstance(unpacked, UninhabitedType)
-
-        # if isinstance(unpacked, (TypeVarTupleType, ParamSpecType)):
-        #     is_empty = False
-        # elif isinstance(unpacked, TupleType):
-        #     is_empty = not unpacked.proper_items
-        # elif self.context.is_tuple_instance_type(unpacked):
-        #     # we treat *tuple[Never, ...] as empty
-        #     is_empty = isinstance(unpacked.args[0], UninhabitedType)
-        # else:
-        #     raise TypeError(f"unexpected type {unpacked!r}")
-
-        if is_empty_unpack:
-            assert not tnf.suffix, f"Failed to correctly parse TupleNormalForm: {tnf}"
-            return TupleType([*tnf.prefix], fallback=self.context.fallback_tuple)
-
-        return TupleType(
-            [*tnf.prefix, parsed_variadic_part, *tnf.suffix], fallback=self.context.fallback_tuple
-        )
-
-    def _materialize_variadic_concatenation(self, unpacked: TypeList) -> UnpackType:
-        """Convert a concatenation of UnpackType / items into a single UnpackType."""
-        parsed_items: list[ProperType] = []
-        for proper_item in map(get_proper_type, unpacked.items):
-            if isinstance(proper_item, UnpackType):
-                # recurse when seeing UnpackType
-                proper_item = self.parse_variadic_type(proper_item)
-            parsed_items.append(proper_item)
-
-        if not parsed_items:
-            # empty concatenation, return UnpackType[Never] to indicate no variadic part
-            return UnpackType(UninhabitedType())
-
-        if len(parsed_items) == 1 and isinstance(unpack := parsed_items[0], UnpackType):
-            # single unpack, just return it directly
-            return unpack
-
-        # more than one unpack: cast every member as Iterable[T] and unify the T's
-        item_types: list[Type] = []
-        for item in parsed_items:
-            if isinstance(item, UnpackType):
-                # cast to Iterable[T] (or Any.from_error)
-                iterable_type = self.context.as_iterable_type(item.type)
-                item_type = (
-                    iterable_type.args[0] if isinstance(iterable_type, Instance) else iterable_type
-                )
-                item_types.append(item_type)
-            else:
-                item_types.append(item)
-        unified_item_type = make_simplified_union(item_types)
-        return UnpackType(self.context.make_tuple_instance_type(unified_item_type))
-
-    def _materialize_variadic_union(self, unpacked: UnionType) -> UnpackType:
-        """Convert a Union of UnpackType into a single UnpackType."""
-        # Currently, Union of star args are not part of the typing spec.
-        # Therefore, we need to reunify such unpackings.
-        # We create an upper bound by converting each union item to an iterable,
-        # and then returning the tuple unpacking *tuple[U₁ | U₂ | ... | Uₙ, ...]
-        # See Also: https://discuss.python.org/t/should-unions-of-tuples-tvts-be-allowed-inside-unpack/102608
-
-        # NOTE: We want to use set here, but we actually need stable ordering for unit tests.
-        parsed_items: list[UnpackType] = []
-        seen_items: set[UnpackType] = set()
-        for proper_item in unpacked.proper_items:
-            # unions members should all be UnpackType themselves
-            assert isinstance(proper_item, UnpackType)
-            parsed_item = self.parse_variadic_type(proper_item)
-            if parsed_item not in seen_items:
-                parsed_items.append(parsed_item)
-            seen_items.add(parsed_item)
-
-        if not parsed_items:
-            return UnpackType(UninhabitedType())
-
-        if len(parsed_items) == 1:
-            return parsed_items[0]
-
-        # more than one unpack: cast every member as Iterable[T] and unify the T's
-        item_types: list[Type] = []
-        for item in parsed_items:
-            # cast to Iterable[T] (or Any.from_error)
-            iterable_type = self.context.as_iterable_type(item.type)
-            item_type = (
-                iterable_type.args[0] if isinstance(iterable_type, Instance) else iterable_type
-            )
-            item_types.append(item_type)
-        unified_item_type = make_simplified_union(item_types)
-        return UnpackType(self.context.make_tuple_instance_type(unified_item_type))
-
-    def _unify_multiple_unpacks(self, items: list[Type]) -> list[Type]:
-        r"""If multiple UnpackType are present, unify them into a single Unpack[tuple[T, ...]]."""
-        # algorithm very similar to TupleNormalForm.from_items
-        seen_unpacks = 0
-        prefix_items: list[Type] = []
-        unpack_items: list[Type] = []
-        suffix_items: list[Type] = []
-
-        for item in flatten_nested_tuples(items):
-            if isinstance(item, UnpackType):
-                seen_unpacks += 1
-                unpack_items.extend(suffix_items)
-                unpack_items.append(item)
-                suffix_items.clear()
-            elif seen_unpacks:
-                suffix_items.append(item)
-            else:
-                prefix_items.append(item)
-
-        if seen_unpacks <= 1:
-            # we can just use the original list
-            return items
-
-        # unify all members of unpack_items into a single tuple[T, ...]
-        item_types = []
-        for item in unpack_items:
-            if isinstance(item, UnpackType):
-                # cast to Iterable[T] (or Any.from_error)
-                iterable_type = self.context.as_iterable_type(item.type)
-                item_type = (
-                    iterable_type.args[0] if isinstance(iterable_type, Instance) else iterable_type
-                )
-                item_types.append(item_type)
-            else:
-                item_types.append(item)
-
-        unified_item_type = make_simplified_union(item_types)
-        unified_unpacked = UnpackType(self.context.make_tuple_instance_type(unified_item_type))
-        return [*prefix_items, unified_unpacked, *suffix_items]
-
-    def parse_variadic_type(self, typ: UnpackType, /) -> UnpackType:
-        r"""Parse the (dirty) UnpackType of a TupleNormalForm.
-
-        A TupleNormalForm's unpack may contain the following unexpected types:
-
-        1. UninhabitedType: indicates no variadic part
-        2. TypeList: indicates concatenation of multiple variadic parts
-        3. UnionType: indicates union of multiple variadic parts
-
-        After processing with this function, the result is guaranteed to be one of:
-
-        1. UninhabitedType: indicates no variadic part
-        2. regular UnpackType content.
-        """
-
-        unpacked = get_proper_type(typ.type)
-
-        if isinstance(unpacked, UninhabitedType):
-            # this is used to indicate no variadic part
-            return typ
-
-        if isinstance(unpacked, TypeList):
-            return self._materialize_variadic_concatenation(unpacked)
-
-        elif isinstance(unpacked, UnionType):
-            return self._materialize_variadic_union(unpacked)
-
-        elif isinstance(
-            unpacked, (ParamSpecType, TypeVarTupleType)
-        ) or self.context.is_tuple_instance_type(unpacked):
-            # already a proper element. Just return it.
-            return typ
-
-        # otherwise, cast to Iterable[T] using the solver, and then return tuple[T, ...]
-        r = self.context.as_iterable_type(unpacked)
-        if isinstance(r, AnyType):
-            return UnpackType(self.context.make_tuple_instance_type(r))
-        return UnpackType(self.context.make_tuple_instance_type(r.args[0]))
+        return context.materialize_tnf(self)

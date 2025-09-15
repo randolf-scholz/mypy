@@ -313,7 +313,7 @@ class B:
     def f(self) -> None: pass
 class C(B):
     def h(self) -> None:
-        super(C, self, 1).f() # E: Too many positional arguments for "super"
+        super(C, self, 1).f() # E: Too many arguments for "super"
 
 [case testSuperWithNonPositionalArguments]
 class B:

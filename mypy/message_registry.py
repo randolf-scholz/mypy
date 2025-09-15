@@ -202,7 +202,7 @@ TYPE_PARAMETERS_SHOULD_BE_DECLARED: Final = (
 )
 
 # Super
-TOO_MANY_ARGS_FOR_SUPER: Final = ErrorMessage('Too many positional arguments for "super"')
+TOO_MANY_ARGS_FOR_SUPER: Final = ErrorMessage('Too many arguments for "super"')
 SUPER_WITH_SINGLE_ARG_NOT_SUPPORTED: Final = ErrorMessage(
     '"super" with a single argument not supported'
 )

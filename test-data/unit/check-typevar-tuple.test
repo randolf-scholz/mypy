@@ -2693,3 +2693,22 @@ tuple(a)
 (x,) = a
 (_,) = a
 [builtins fixtures/tuple.pyi]
+
+
+[case testParamSpecWithVarArgsTypeVarTuple]
+# https://github.com/python/mypy/issues/19855
+from typing import Callable, TypeVar
+from typing_extensions import TypeVarTuple, ParamSpec, Unpack
+
+T = TypeVar("T")
+P = ParamSpec("P")
+Us = TypeVarTuple("Us")
+Ts = TypeVarTuple("Ts")
+
+def run(fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T: ...
+def coroutine_or_error(async_fn: Callable[[Unpack[Us]], int], *args: Unpack[Us]) -> int: ...
+
+def test(async_fn: Callable[[Unpack[Ts]], int], args: tuple[Unpack[Ts]]) -> None:
+    r = run(coroutine_or_error, async_fn, *args)
+    reveal_type(r)  # N: Revealed type is "builtins.int"
+[builtins fixtures/tuple.pyi]

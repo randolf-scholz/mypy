@@ -17,6 +17,7 @@ from mypy.types import (
     Type,
     TypedDictType,
     TypeOfAny,
+    TypeVarTupleType,
     UninhabitedType,
     UnpackType,
     get_proper_type,
@@ -315,10 +316,15 @@ class ArgTypeExpander:
 
 
 def unparse_star_parameter(t: Type) -> Type:
-    """Reverse certain normalizations done for star arguments."""
+    r"""Reverse normalizations done by parse_star_parameter.
+
+    tuple[*tuple[T, ...]]  -> T
+    tuple[A, B]            -> *tuple[A, B]
+    tuple[*Ts]             -> *Ts
+    tuple[*P.args]         -> P.args
+    """
     p_t = get_proper_type(t)
     assert isinstance(p_t, TupleType), f"Expected a parsed star argument, got {t}"
-    # simplify tuple[*Ts] -> Ts and similar
     simplified_type = p_t.simplify()
     proper_simplified = get_proper_type(simplified_type)
 
@@ -326,5 +332,11 @@ def unparse_star_parameter(t: Type) -> Type:
     if isinstance(proper_simplified, Instance):
         assert proper_simplified.type.fullname == "builtins.tuple"
         return proper_simplified.args[0]
-
-    return simplified_type
+    # wrap tuple and Ts in UnpackType
+    elif isinstance(proper_simplified, (TupleType, TypeVarTupleType)):
+        return UnpackType(simplified_type)
+    # return ParamSpec as is.
+    elif isinstance(proper_simplified, ParamSpecType):
+        return simplified_type
+    else:
+        assert False, f"Unexpected unpack content {simplified_type!r}"

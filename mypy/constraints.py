@@ -1467,7 +1467,6 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
 
         actual = self.actual
         original_actual = actual  # backup for error messages
-
         std_tuple_typeinfo = get_std_tuple_typeinfo(
             template
         )  #  extract typeinfo of builtins.tuple
@@ -1488,6 +1487,17 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
             # 3. template is not variadic, but actual is variadic
             # 4. neither template nor actual are variadic
             constraints: list[Constraint] = []
+
+            if (
+                actual.partial_fallback.type.is_named_tuple
+                and template.partial_fallback.type.is_named_tuple
+            ):
+                # For named tuples using just the fallbacks usually gives better results.
+                constraints.extend(
+                    infer_constraints(
+                        template.partial_fallback, actual.partial_fallback, self.direction
+                    )
+                )
 
             actual_prefix = actual.prefix
             actual_suffix = actual.suffix

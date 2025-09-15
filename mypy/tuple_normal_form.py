@@ -728,9 +728,11 @@ class _TupleConstructor:
 
         if is_empty_unpack:
             assert not tnf.suffix, f"Failed to correctly parse TupleNormalForm: {tnf}"
-            return TupleType([*tnf.prefix], self.context.tuple_type)
+            return TupleType([*tnf.prefix], fallback=self.context.fallback_tuple)
 
-        return TupleType([*tnf.prefix, parsed_variadic_part, *tnf.suffix], self.context.tuple_type)
+        return TupleType(
+            [*tnf.prefix, parsed_variadic_part, *tnf.suffix], fallback=self.context.fallback_tuple
+        )
 
     def _materialize_variadic_concatenation(self, unpacked: TypeList) -> UnpackType:
         """Convert a concatenation of UnpackType / items into a single UnpackType."""

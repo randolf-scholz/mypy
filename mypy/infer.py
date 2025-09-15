@@ -12,7 +12,7 @@ from mypy.constraints import (
     infer_constraints,
     infer_constraints_for_callable,
 )
-from mypy.nodes import ARG_POS, ArgKind
+from mypy.nodes import ARG_POS, ArgKind, TypeInfo
 from mypy.solve import solve_constraints
 from mypy.tuple_normal_form import TupleInstanceType, TupleNormalForm
 from mypy.typeops import make_simplified_union
@@ -50,7 +50,14 @@ class ArgumentInferContext(NamedTuple):
     mapping_type: Instance
     iterable_type: Instance
     function_type: Instance
-    tuple_type: Instance
+    tuple_typeinfo: TypeInfo
+
+    @property
+    def fallback_tuple(self) -> Instance:
+        r"""Canonical fallback tuple type tuple[Any, ...]."""
+        # NOTE: This must use ``TypeOfAny.special_form`` and not ``TypeOfAny.from_omitted_generics``,
+        #   otherwise this leads to errors in dmypy SuggestionEngine.
+        return Instance(self.tuple_typeinfo, [AnyType(TypeOfAny.special_form)])
 
     def is_iterable(self, typ: Type) -> bool:
         """Check if the type is an iterable, i.e. implements the Iterable Protocol."""
@@ -66,11 +73,11 @@ class ArgumentInferContext(NamedTuple):
     def is_tuple_instance_type(self, typ: Type) -> TypeIs[TupleInstanceType]:
         """Check if the type is a tuple instance, i.e. tuple[T, ...]."""
         p_t = get_proper_type(typ)
-        return isinstance(p_t, Instance) and p_t.type == self.tuple_type.type
+        return isinstance(p_t, Instance) and p_t.type == self.tuple_typeinfo
 
     def make_tuple_instance_type(self, arg: Type) -> TupleInstanceType:
         """Create a TupleInstance type with the given argument type."""
-        value = Instance(self.tuple_type.type, [arg])
+        value = Instance(self.tuple_typeinfo, [arg])
         return cast(TupleInstanceType, value)
 
     def make_iterable_instance_type(self, arg: Type) -> IterableType:

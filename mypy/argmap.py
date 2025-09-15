@@ -200,7 +200,7 @@ class ArgTypeExpander:
         elif actual_kind == ARG_STAR:
             # parse *args into a TupleType.
             star_args_type = self.parse_star_argument(actual_type)
-            tuple_helper = TupleHelper(self.context.tuple_type)
+            tuple_helper = TupleHelper(self.context.tuple_typeinfo)
 
             # star_args_type failed to parse. treat as if it were tuple[Any, ...]
             if isinstance(star_args_type, AnyType):
@@ -305,16 +305,16 @@ class ArgTypeExpander:
             unpacked = get_proper_type(p_t.type)
             if isinstance(unpacked, TupleType):
                 return unpacked
-            return TupleType([p_t], fallback=self.context.tuple_type)
+            return TupleType([p_t], fallback=self.context.fallback_tuple)
 
         elif isinstance(p_t, ParamSpecType):
             # we put the ParamSpecType here inside
             parsed = UnpackType(p_t)
-            return TupleType([parsed], fallback=self.context.tuple_type)
+            return TupleType([parsed], fallback=self.context.fallback_tuple)
 
         else:  # e.g. *args: int  --> *args: *tuple[int, ...]
             parsed = UnpackType(self.context.make_tuple_instance_type(p_t))
-            return TupleType([parsed], fallback=self.context.tuple_type)
+            return TupleType([parsed], fallback=self.context.fallback_tuple)
 
     def expand_all_actuals_and_formal_star_arg(self, actual_types, actual_kinds, formal_type):
         r"""

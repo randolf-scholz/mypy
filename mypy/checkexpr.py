@@ -2295,7 +2295,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                 self.chk.named_type("typing.Mapping"),
                 self.chk.named_type("typing.Iterable"),
                 self.chk.named_type("builtins.function"),
-                self.chk.named_type("builtins.tuple"),
+                self.chk.named_type("builtins.tuple").type,
             )
         return self._arg_infer_context_cache
 
@@ -2623,7 +2623,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                     )
 
             elif formal_kind == ARG_STAR:
-                tuple_helper = TupleHelper(self.argument_infer_context().tuple_type)
+                tuple_helper = TupleHelper(self.argument_infer_context().tuple_typeinfo)
 
                 assert len(actuals) >= 1
                 actual_types = [arg_types[a] for a in actuals]
@@ -2955,7 +2955,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                                     size -= 1
 
                                 expected_type = TupleType(
-                                    items=expected_items, fallback=mapper.context.tuple_type
+                                    items=expected_items, fallback=mapper.context.tuple_typeinfo
                                 )
                             else:
                                 assert False, f"Unexpected argument kind in prefix {actual_kind}"

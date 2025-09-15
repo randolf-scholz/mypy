@@ -1331,8 +1331,8 @@ f3(tl)
 f3(tr)
 
 f4(t1)
-f4(t2)  # E: Argument 1 to "f4" has incompatible type "tuple[int, Unpack[tuple[int, ...]]]"; expected "tuple[float, Unpack[tuple[float, ...]], float]"
-f4(t3)  # E: Argument 1 to "f4" has incompatible type "tuple[Unpack[tuple[int, ...]], int]"; expected "tuple[float, Unpack[tuple[float, ...]], float]"
+f4(t2)
+f4(t3)
 f4(t4)
 f4(t5)  # E: Argument 1 to "f4" has incompatible type "tuple[int, ...]"; expected "tuple[float, Unpack[tuple[float, ...]], float]"
 

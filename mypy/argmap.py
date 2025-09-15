@@ -55,7 +55,7 @@ def map_actuals_to_formals(
                     formal_to_actual[fi].append(ai)
         elif actual_kind == ARG_STAR:
             # convert the actual argument type to a tuple-like type
-            star_arg_type = TupleNormalForm.from_star_arg(actual_arg_type(ai))
+            star_arg_type = TupleNormalForm.from_star_argument(actual_arg_type(ai))
 
             # for a variadic argument use a negative value, so it remains truthy when decremented
             # otherwise, use the length of the prefix.
@@ -169,7 +169,7 @@ class ArgTypeExpander:
 
         Note: For star parameters, use `parse_star_parameter` instead.
         """
-        tnf = TupleNormalForm.from_star_arg(star_arg)
+        tnf = TupleNormalForm.from_star_argument(star_arg)
         return tnf.materialize(self.context)
 
     def parse_star_parameter(self, star_param: Type, /) -> TupleType:
@@ -314,7 +314,7 @@ class ArgTypeExpander:
             assert False, f"unexpected actual kind {actual_kind}"
 
 
-def unparse_star_argument(t: Type) -> Type:
+def unparse_star_parameter(t: Type) -> Type:
     """Reverse certain normalizations done for star arguments."""
     p_t = get_proper_type(t)
     assert isinstance(p_t, TupleType), f"Expected a parsed star argument, got {t}"

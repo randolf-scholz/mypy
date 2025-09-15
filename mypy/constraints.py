@@ -8,7 +8,7 @@ from typing_extensions import TypeGuard
 
 import mypy.subtypes
 import mypy.typeops
-from mypy.argmap import ArgTypeExpander, unparse_star_argument
+from mypy.argmap import ArgTypeExpander, unparse_star_parameter
 from mypy.erasetype import erase_typevars
 from mypy.maptype import map_instance_to_supertype
 from mypy.nodes import (
@@ -189,7 +189,7 @@ def infer_constraints_for_callable(
                 elif actual_kind == ARG_STAR:
                     # TODO: shouldn't this re-normalization be done in the constructor
                     # of types.Parameters?
-                    expanded_actual = unparse_star_argument(expanded_actual)
+                    expanded_actual = unparse_star_parameter(expanded_actual)
                     param_spec_arg_types.append(expanded_actual)
                     param_spec_arg_kinds.append(actual_kind)
                     param_spec_arg_names.append(actual_name)

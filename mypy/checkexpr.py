@@ -2417,7 +2417,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                     ok = False
                 elif formal_kind == ARG_STAR:
                     # check if the star argument has a minimum size (e.g. *tuple[*tuple[int, ...], int])
-                    star_param_type = TupleNormalForm.from_star_param(callee.arg_types[i])
+                    star_param_type = TupleNormalForm.from_star_parameter(callee.arg_types[i])
                     if star_param_type.minimum_length:
                         #     self.msg.too_few_arguments_for_star_arg(
                         #         callee, context, star_param_type.minimum_length
@@ -2489,7 +2489,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                     is_unexpected_arg_error = True
 
                 elif kind == ARG_STAR:
-                    star_arg_type = TupleNormalForm.from_star_arg(actual_types[i])
+                    star_arg_type = TupleNormalForm.from_star_argument(actual_types[i])
                     if star_arg_type.minimum_length > 0:
                         ok = False
                         self.msg.too_many_positional_arguments(callee, context)
@@ -2505,7 +2505,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
 
             else:
                 if kind == ARG_STAR:
-                    star_arg_type = TupleNormalForm.from_star_arg(actual_types[i])
+                    star_arg_type = TupleNormalForm.from_star_argument(actual_types[i])
                     if (ARG_STAR not in callee.arg_kinds) and (
                         star_arg_type.minimum_length > all_actuals[i]
                     ):

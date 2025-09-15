@@ -176,18 +176,19 @@ class TupleHelper:
             assert False, f"Unexpected unpacked type: {unpacked}"
 
     def get_item(self, tup: TupleType, index: int) -> Type | None:
-        r"""Get the type of indexing the tuple.
+        r"""Get the item at the given index, treating the variadic part as arbitrarily long.
 
-        Assuming the tuple type is in Tuple Normal Form, then the result is:
+        Returns:
+            None: If the index is out of bounds and the tuple has no variadic part.
+            Type: If the index is in bounds or the tuple has no variadic part.
 
-        tuple[P1, ..., Pn, *Vs, S1, ..., Sm] @ index =
-            Iterable_type[Vs]  if index < -m
-            S[index]           if -m ≤ index < 0
-            P[index]           if 0 ≤ index < n
-            Iterable_type[Vs]  if index ≥ n
+            Otherwise, pretend the variadic part has arbitrarily many items of the appropriate type.
 
-        If the tuple has no variadic part, then it works just like regular indexing,
-        but returns None if the index is out of bounds.
+            tuple[P1, ..., Pn, *Vs, S1, ..., Sm] @ index =
+                Iterable_type[Vs]  if index < -m
+                S[index]           if -m ≤ index < 0
+                P[index]           if 0 ≤ index < n
+                Iterable_type[Vs]  if index ≥ n
         """
         flattened_items = tup.flattened_items
         unpack_index = tup.unpack_index
@@ -209,18 +210,20 @@ class TupleHelper:
     def get_slice(
         self, tup: TupleType, start: int | None, stop: int | None, step: int = 1
     ) -> TupleType:
-        r"""Get a special slice from the tuple.
+        r"""Get a slice of the tuple, treating the variadic part as arbitrarily long.
 
-        If the tuple has no variadic part, this works like regular slicing.
-        However, if the tuple has a variadic part, then, depending on the indices,
-        this does something special:
+        Returns:
+            TupleType: The sliced tuple type.
 
-        1. If both start and stop are same signed integers (both non-negative or both negative),
-           then we slice as if the variadic part as expanded into an infinite sequence
-           of items, whose type we get by casting the unpack type to Iterable[T] and taking T.
-           This supports step values other than 1 or -1.
-        2. In all other cases,
-        It is assumed the tuple is in Tuple Normal Form.
+                If the tuple has no variadic part, this works like regular slicing.
+                If the tuple has a variadic part, the shape of the slice depends on the signs
+                of start and stop, as described below:
+
+                1. If both start and stop are same signed integers (both non-negative or both negative),
+                   then we slice as if the variadic part was expanded into an infinite sequence
+                   of items (whose type we get by casting the unpack type to Iterable[T] and taking T)
+                2. In all other cases, this works like regular slicing, treating the variadic part as a single item.
+                   However, only step=1 and step=-1 are supported in this case.
 
         t = tuple[P1, ..., Pn, *Vs, S1, ..., Sm]
 
@@ -256,33 +259,40 @@ class TupleHelper:
         clip: Callable[[int], int] = lambda x: max(min(-suffix_length, -1), min(x, prefix_length))
         start = None if start is None else clip(start)
         stop = None if stop is None else clip(stop)
+        assert step != 0, "slice step cannot be zero"
 
+        # a slice within the prefix
         if (start is None or start >= 0) and (stop is not None and stop >= 0):
             start = 0 if start is None else start
             items = [
                 flattened_items[i] if i < prefix_length else iterable_type
                 for i in range(start, stop, step)
             ]
-        elif (start is None or start >= 0) and (stop is None or stop < 0) and step == 1:
-            items = [
-                *flattened_items[start:unpack_index:step],
-                variadic_part,
-                *flattened_items[unpack_index + 1 : stop : step],
-            ]
-        elif (start is None or start < 0) and (stop is None or stop >= 0) and step == -1:
-            items = [
-                *flattened_items[start : unpack_index + 1 : step],
-                variadic_part,
-                *flattened_items[unpack_index - 1 : stop : step],
-            ]
+        # a slice within the suffix
         elif (start is not None and start < 0) and (stop is None or stop < 0):
             stop = 0 if stop is None else stop
             items = [
                 flattened_items[i] if i >= -suffix_length else iterable_type
                 for i in range(start, stop, step)
             ]
+        # a slice that traverses the variadic part in the forward direction
+        elif (start is None or start >= 0) and (stop is None or stop < 0) and step > 0:
+            assert step == 1, "Only step=+1 supported when slicing forward across variadic part"
+            items = [
+                *flattened_items[start:unpack_index:step],
+                variadic_part,
+                *flattened_items[unpack_index + 1 : stop : step],
+            ]
+        # a slice that traverses the variadic part in the backward direction
+        elif (start is None or start < 0) and (stop is None or stop >= 0) and step < 0:
+            assert step == -1, "Only step=-1 supported when slicing backward across variadic part"
+            items = [
+                *flattened_items[start : unpack_index + 1 : step],
+                variadic_part,
+                *flattened_items[unpack_index - 1 : stop : step],
+            ]
+        # empty slice
         else:
-            # empty slice
             items = []
 
         return self.make_tuple_type(items)
@@ -377,8 +387,16 @@ class TupleNormalForm(NamedTuple):
         #    However we treat this as if it were tuple[int, *tuple[T, ...], str]
         return len(self.prefix) + len(self.suffix)
 
+    def materialize(self, context: ArgumentInferContext) -> TupleType:
+        """Construct the actual TupleType from the TupleNormalForm.
+
+        Since this method needs access to the `TypeInfo` of `builtins.tuple`
+        and `typing.Iterable`, we require the caller to provide an `ArgumentInferContext`.
+        """
+        return context.materialize_tnf(self)
+
     @staticmethod
-    def from_star_param(star_param: Type, /) -> TupleNormalForm:
+    def from_star_parameter(star_param: Type, /) -> TupleNormalForm:
         """Create a TupleNormalForm from the type of a ``*args: T`` annotation.
 
         During Semantic Analysis, the type of `*args: T` is not always wrapped in `UnpackType`.
@@ -388,8 +406,8 @@ class TupleNormalForm(NamedTuple):
         """
         p_t = get_proper_type(star_param)
         if isinstance(p_t, UnpackType):
-            # we can use the same logic as from_star_arg
-            return TupleNormalForm.from_star_arg(p_t)
+            # we can use the same logic as from_star_argument
+            return TupleNormalForm.from_star_argument(p_t)
         elif isinstance(p_t, ParamSpecType):
             # ParamSpecType is always variadic
             variadic_part = UnpackType(p_t, from_star_syntax=True)
@@ -404,7 +422,7 @@ class TupleNormalForm(NamedTuple):
             return TupleNormalForm([], DirtyUnpackType(variadic_part), [])
 
     @staticmethod
-    def from_star_arg(star_arg: Type, /) -> TupleNormalForm:
+    def from_star_argument(star_arg: Type, /) -> TupleNormalForm:
         """Create a TupleNormalForm from a type that was passed as a star argument.
 
         Uses special cases for tuple types and unions of tuples.
@@ -443,12 +461,12 @@ class TupleNormalForm(NamedTuple):
 
         # special case single tuple
         if isinstance(p_t, TupleType):
-            return TupleNormalForm.from_tuple_type(p_t)
+            return TupleNormalForm.from_items(p_t.items)
 
         # special case union of tuples
         elif isinstance(p_t, UnionType):
             # if all items are tuples, we can split them
-            tnfs = [TupleNormalForm.from_star_arg(x) for x in p_t.proper_items]
+            tnfs = [TupleNormalForm.from_star_argument(x) for x in p_t.proper_items]
             return TupleNormalForm.combine_union(tnfs)
 
         # assume that the star args is some variadic type,
@@ -459,8 +477,8 @@ class TupleNormalForm(NamedTuple):
             return TupleNormalForm([], DirtyUnpackType(variadic_part), [])
 
     @staticmethod
-    def from_tuple_type(typ: TupleType, /) -> TupleNormalForm:
-        r"""Split a tuple into 3 parts: head part, body part and tail part.
+    def from_items(items: Iterable[Type], /) -> TupleNormalForm:
+        r"""Split a tuple (or list of items) into 3 parts: head part, body part and tail part.
 
         1. A head part which is the longest finite prefix of the tuple
         2. A body part which covers all items from the first variable item to the last variable item
@@ -480,10 +498,6 @@ class TupleNormalForm(NamedTuple):
             - tuple[int, *tuple[int, ...], str, *tuple[str, ...], int]
               -> ([int], [*tuple[int, ...], str, *tuple[str, ...]], [int])
         """
-        return TupleNormalForm.from_items(typ.items)
-
-    @staticmethod
-    def from_items(items: Iterable[Type], /) -> TupleNormalForm:
         head_items: list[Type] = []
         tail_items: list[Type] = []
         body_items: list[Type] = []
@@ -642,11 +656,3 @@ class TupleNormalForm(NamedTuple):
             )
         )
         return TupleNormalForm.from_items(items)
-
-    def materialize(self, context: ArgumentInferContext) -> TupleType:
-        """Construct the actual TupleType from the TupleNormalForm.
-
-        Since this method needs access to the `TypeInfo` of `builtins.tuple`
-        and `typing.Iterable`, we require the caller to provide an `ArgumentInferContext`.
-        """
-        return context.materialize_tnf(self)

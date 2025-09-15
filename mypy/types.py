@@ -2940,20 +2940,23 @@ class TupleType(ProperType):
 
         Example:
             tuple[*tuple[int, ...]] -> tuple[int, ...]
-            tuple[*Ts]              -> Ts
             tuple[*tuple[int, str]] -> tuple[int, str]
+            tuple[*ParamSpec]       -> ParamSpec
         """
         flattened_items = self.flattened_items
         if len(flattened_items) == 1:
             first_item = get_proper_type(flattened_items[0])
             if isinstance(first_item, UnpackType):
                 proper_unpacked = get_proper_type(first_item.type)
-                assert isinstance(
-                    proper_unpacked, (TupleType, Instance, TypeVarTupleType, ParamSpecType)
-                ), f"{proper_unpacked=}"
                 if isinstance(proper_unpacked, TupleType):
                     return proper_unpacked.simplify()
-                return first_item.type
+                elif isinstance(proper_unpacked, (Instance, ParamSpecType)):
+                    return first_item.type
+                elif isinstance(proper_unpacked, TypeVarTupleType):
+                    # do not unpack TypeVarTupleType
+                    return self
+                else:
+                    assert False, f"unexpected unpacked type {proper_unpacked!r}"
         return self
 
 

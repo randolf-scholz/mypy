@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from itertools import chain
 from typing import TYPE_CHECKING, Callable, NamedTuple, NewType, cast
-from typing_extensions import TypeAlias as _TypeAlias, TypeGuard, TypeIs
+from typing_extensions import TypeGuard, TypeIs
 
 from mypy.maptype import map_instance_to_supertype
 from mypy.nodes import TypeInfo
@@ -28,16 +28,6 @@ from mypy.types import (
 if TYPE_CHECKING:
     from mypy.infer import ArgumentInferContext
 
-# TODO: Actually properly define VariadicType if ever `UnpackType` and `UnionType` are made generic.
-#     type VariadicType = UnpackType[TypeList | UnionType[VariadicType]]
-VariadicType = NewType("VariadicType", UnpackType)
-
-FlatTuple = NewType("FlatTuple", TupleType)
-"""A tuple type that has been flattened; any UnpackType should only contain TypeVarTupleType or TupleInstance."""
-FiniteTuple = NewType("FiniteTuple", TupleType)
-"""Represents an instance of `tuple[T1, T2, ..., Tn]` with a finite number of items."""
-TupleLikeType: _TypeAlias = "TupleType | TypeVarTupleType | TupleInstanceType | FiniteTuple"
-r"""Types that are considered tuples or tuple-like."""
 DirtyUnpackType = NewType("DirtyUnpackType", UnpackType)
 r"""An UnpackType that may contain unexpected members, such as TypeList or UnionType."""
 TupleInstanceType = NewType("TupleInstanceType", Instance)
@@ -50,8 +40,7 @@ def get_std_tuple_typeinfo(typ: TupleType, /) -> TypeInfo:
     if fallback.type.fullname == "builtins.tuple":
         return fallback.type
 
-    # this can happen when the fallback is a NamedTuple subclass
-    # in this case, we look for 'builtins.tuple' in the MRO
+    # this can happen for instance for named tuples
     for base in fallback.type.mro:
         if base.fullname == "builtins.tuple":
             return base

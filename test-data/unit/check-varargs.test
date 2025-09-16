@@ -562,7 +562,7 @@ def test_union_fixed_size_and_variadic_tuple(
     x1: Union[tuple[A, B, C], tuple[None, ...]],
     y1: tuple[Union[A, B, C, None], ...],  # reference type
     x2: Union[tuple[A, B, C], tuple[None, Unpack[tuple[None, ...]], None]],
-    y2: tuple[Union[A, None], *tuple[Union[B, None], ...], Union[C, None]],  # reference type
+    y2: tuple[Union[A, None], Unpack[tuple[Union[B, None], ...]], Union[C, None]],  # reference type
 ) -> None:
     reveal_type( as_tuple(*x1) )  # N: Revealed type is "builtins.tuple[Union[__main__.A, __main__.B, __main__.C, None], ...]"
     reveal_type( as_tuple(*y1) )  # N: Revealed type is "builtins.tuple[Union[__main__.A, __main__.B, __main__.C, None], ...]"
@@ -643,7 +643,7 @@ def test_union_fixed_size_and_variadic_tuple(
     x1: Union[tuple[A, B, C], tuple[None, ...]],
     y1: tuple[Union[A, B, C, None], ...],  # reference type
     x2: Union[tuple[A, B, C], tuple[None, Unpack[tuple[None, ...]], None]],
-    y2: tuple[Union[A, None], *tuple[Union[B, None], ...], Union[C, None]],  # reference type
+    y2: tuple[Union[A, None], Unpack[tuple[Union[B, None], ...]], Union[C, None]],  # reference type
 ) -> None:
     reveal_type( (*x1,) )  # N: Revealed type is "builtins.tuple[Union[__main__.A, __main__.B, __main__.C, None], ...]"
     reveal_type( (*y1,) )  # N: Revealed type is "builtins.tuple[Union[__main__.A, __main__.B, __main__.C, None], ...]"
@@ -859,15 +859,15 @@ def test_padded_union_typevartuple(padded_union: Union[tuple[A, Unpack[Ts], A], 
     reveal_type( {*padded_union} )   # N: Revealed type is "builtins.set[Union[__main__.A, None, Any]]"
 
 def test_padded_union_head(
-    x: Union[tuple[None, A, A, *tuple[None, ...]], tuple[None, A, *tuple[None, ...]]],
-    y: tuple[None, A, *tuple[Union[A, None], ...]],  # reference type
+    x: Union[tuple[None, A, A, Unpack[tuple[None, ...]]], tuple[None, A, Unpack[tuple[None, ...]]]],
+    y: tuple[None, A, Unpack[tuple[Union[A, None], ...]]],  # reference type
 ) -> None:
     reveal_type( (*x,) )  # N: Revealed type is "tuple[None, __main__.A, Unpack[builtins.tuple[Union[__main__.A, None], ...]]]"
     reveal_type( (*y,) )  # N: Revealed type is "tuple[None, __main__.A, Unpack[builtins.tuple[Union[__main__.A, None], ...]]]"
 
 def test_padded_union_tail(
-    x: Union[tuple[*tuple[None, ...], A, A, None], tuple[*tuple[None, ...], A, None]],
-    y: tuple[*tuple[Union[A, None], ...], A, None],  # reference type
+    x: Union[tuple[Unpack[tuple[None, ...]], A, A, None], tuple[Unpack[tuple[None, ...]], A, None]],
+    y: tuple[Unpack[tuple[Union[A, None], ...]], A, None],  # reference type
 ) -> None:
     reveal_type( (*x,) )  # N: Revealed type is "tuple[Unpack[builtins.tuple[Union[None, __main__.A], ...]], __main__.A, None]"
     reveal_type( (*y,) )  # N: Revealed type is "tuple[Unpack[builtins.tuple[Union[__main__.A, None], ...]], __main__.A, None]"

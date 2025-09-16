@@ -1839,11 +1839,11 @@ class A4: ...
 T = TypeVar("T")
 
 def left_variadic(
-    *args: *tuple[*tuple[T, ...], T, T, T],
+    *args: Unpack[tuple[Unpack[tuple[T, ...]], T, T, T]],
 ) -> T: ...
 
 def right_variadic(
-    *args: *tuple[T, T, T, *tuple[T, ...]],
+    *args: Unpack[tuple[T, T, T, Unpack[tuple[T, ...]]]],
 ) -> T: ...
 
 def test_right_variadic_param_with_left_variadic_argument(
@@ -1926,11 +1926,11 @@ Ts = TypeVarTuple("Ts")
 
 
 def left_variadic(
-    *args: *tuple[*Ts, T1, T2, T3],
+    *args: Unpack[tuple[Unpack[Ts], T1, T2, T3]],
 ) -> tuple[*Ts, T1, T2, T3]: ...
 
 def right_variadic(
-    *args: *tuple[T1, T2, T3, *Ts],
+    *args: Unpack[tuple[T1, T2, T3, Unpack[Ts]]],
 ) -> tuple[T1, T2, T3, *Ts]: ...
 
 

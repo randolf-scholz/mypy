@@ -5,10 +5,10 @@ from __future__ import annotations
 import enum
 import itertools
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager, nullcontext
-from typing import Callable, ClassVar, Final, NamedTuple, Optional, cast, overload
+from typing import Callable, ClassVar, Final, Optional, cast, overload
 from typing_extensions import TypeAlias as _TypeAlias, assert_never
 
 import mypy.checker
@@ -18,6 +18,7 @@ from mypy.argmap import ArgTypeExpander, map_actuals_to_formals, map_formals_to_
 from mypy.checker_shared import ExpressionCheckerSharedApi
 from mypy.checkmember import analyze_member_access, has_operator
 from mypy.checkstrformat import StringFormatterChecker
+from mypy.constraints import ParsedActual
 from mypy.erasetype import erase_type, remove_instance_last_known_values, replace_meta_vars
 from mypy.errors import ErrorInfo, ErrorWatcher, report_internal_error
 from mypy.expandtype import (
@@ -121,7 +122,7 @@ from mypy.subtypes import (
     non_method_protocol_members,
 )
 from mypy.traverser import has_await_expression
-from mypy.tuple_normal_form import TupleHelper, TupleNormalForm, is_variadic_tuple
+from mypy.tuple_normal_form import TupleHelper, TupleNormalForm
 from mypy.typeanal import (
     check_for_explicit_any,
     fix_instance,
@@ -2471,7 +2472,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                 else:
                     assert False, f"Unexpected argument kind {kind}"
 
-            else:
+            else:  # i in all_actuals
                 if kind == ARG_STAR:
                     star_arg_type = TupleNormalForm.from_star_argument(actual_types[i])
                     if (ARG_STAR not in callee.arg_kinds) and (
@@ -2538,258 +2539,70 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                 )
                 self.msg.invalid_keyword_var_arg(arg_type, is_mapping, context)
 
-        # Implementation of Algorithm described in
-        # https://github.com/python/mypy/issues/19692#issuecomment-3211743894
-        _validate_arg_kinds(arg_kinds)
-
-        # formal_to_actual = _use_only_first_valid_arg(formal_to_actual, callee.arg_kinds)
-        # _validate_formal_to_actual(formal_to_actual, arg_kinds, callee.arg_kinds)
-
         for i, actuals in enumerate(formal_to_actual):
-            formal_kind = callee.arg_kinds[i]
-            formal_type = callee.arg_types[i]
-            formal_name = callee.arg_names[i]
-
-            # sanity check actual length
+            # missing actuals are checked in check_argument_count
             if not actuals:
-                # missing actuals are checked in check_argument_count
                 continue
+
+            formal_type = callee.arg_types[i]
+            formal_kind = callee.arg_kinds[i]
+            formal_name = callee.arg_names[i]
 
             if formal_kind in (ARG_POS, ARG_OPT, ARG_NAMED, ARG_NAMED_OPT, ARG_STAR2):
                 # these cases are all easy, we just need to check the actuals one by one
-                # Note: for ARG_POS, ARG_OPT multiple actuals are possible if the user
-                #   passed the same argument both positionally and as a keyword.
-                #   the error for this is reported in check_argument_count.
-                #   here we only check the argument types.
-                actual_types = [arg_types[a] for a in actuals]
-                actual_kinds = [arg_kinds[a] for a in actuals]
-
-                for actual, actual_type, actual_kind in zip(actuals, actual_types, actual_kinds):
+                # Note: for ARG_POS, ARG_OPT, ARG_NAMED, ARG_NAMED_OPT multiple actuals
+                #   are a TOO_MANY_ARGUMENTS error, which is reported in check_argument_count.
+                for a in actuals:
                     expanded_actual = mapper.expand_actual_type(
-                        actual_type, actual_kind, formal_name, formal_kind
+                        arg_types[a], arg_kinds[a], formal_name, formal_kind
                     )
                     check_arg(
                         expanded_actual,
-                        actual_type,
-                        actual_kind,
+                        arg_types[a],
+                        arg_kinds[a],
                         formal_type,
-                        actual + 1,
+                        a + 1,
                         i + 1,
                         callee,
                         object_type,
-                        args[actual],
+                        args[a],
                         context,
                     )
 
             elif formal_kind == ARG_STAR:
-                tuple_helper = TupleHelper(self.argument_infer_context().tuple_typeinfo)
-
-                assert len(actuals) >= 1
-                actual_types = [arg_types[a] for a in actuals]
-                actual_kinds = [arg_kinds[a] for a in actuals]
-
-                # parse the formal type as a tuple in TNF
+                # parse the formal type into a TupleType.
                 formal_tuple = mapper.parse_star_parameter(formal_type)
-                formal_unpack_index = formal_tuple.unpack_index
-                assert formal_unpack_index is not None, "This was dealt with during normalization"
-                formal_prefix_length = len(formal_tuple.prefix)
-                formal_suffix_length = len(formal_tuple.suffix)
+                # non-variadic star parameters are converted to plain ARG_POS during normalization
+                assert formal_tuple.unpack_index is not None, "Expected variadic star parameter"
 
-                # we check the given args one by one.
-                # for positional arguments, we index into the formal tuple type
-                # for star arguments, we compare to a slice of the formal tuple type.
-                # what will be a biot tricky is matching the suffix.
-                # This will need to be accounted for if any of the actuals is variadic.
-
-                # The algorithm is similar to how we dealt with computing the TNF from a list
-                # of items to begin with.
-                # We will start with matching the prefix.
-                # once we hit the first variadic actual ARG_STAR, we break
-                # then, we queue all items until we hit the last variadic actual ARG_STAR.
-                # finally, we check the args for the grouped items.
-
-                prefix_actuals: list[_Actual] = []
-                middle_actuals: list[_Actual] = []
-                suffix_actuals: list[_Actual] = []
-                parsed_actuals: list[_Actual] = []
-
-                expanded_actuals: list[Type] = []
-                seen_variadic = False
-
-                # next, we need to match the actuals against the formal tuple type.
-                # This is done by first exhausting the formal prefix one by one from the start,
-                # then the formal suffix one by one from the end,
-                # and finally matching the remaining actuals against the variadic middle part.
-
-                # example:
-                # formal: *tuple[str, str, *tuple[int, ...], str, str]
-                # actual: *tuple[str, str, str, str]
-                # In this case, we match the actual against the first two and last two items of the formal tuple.
-                # that is, for a finite tuple arg, and formal tuple F,
-                # we match against
-                #   [F[i] while prefix_items, *F.variadic_item, F[-i] while suffix_items]
-
-                # group the actuals by which part of the formal tuple they will match against
-                # essentially the same algorithm as in TNF._from_items
-                for actual, actual_kind, actual_type in zip(actuals, actual_kinds, actual_types):
-                    expanded_actual = mapper.expand_actual_type(
-                        actual_type, actual_kind, None, formal_kind
+                # Parse all the actuals in order
+                parsed_actuals = [
+                    ParsedActual(
+                        id=actual,
+                        kind=arg_kinds[actual],
+                        type=arg_types[actual],
+                        expanded=mapper.expand_actual_type(
+                            arg_types[actual], arg_kinds[actual], None, formal_kind
+                        ),
                     )
-                    expanded_actuals.append(expanded_actual)
+                    for actual in actuals
+                ]
 
-                    # determine the size of the actual
-                    if actual_kind == ARG_POS:
-                        actual_size = 1
-                    elif actual_kind == ARG_STAR:
-                        p_e = get_proper_type(expanded_actual)
-                        assert isinstance(p_e, TupleType)
-                        actual_size = p_e.minimum_length
-                    else:
-                        assert False, f"Unexpected argument kind in *args {actual_kind}"
+                # for each actual, determine the expected type from the formal tuple
+                expected_types = map_actuals_to_star_parameter(formal_tuple, parsed_actuals)
+                assert len(expected_types) == len(parsed_actuals)
 
-                    item = _Actual(actual, actual_kind, actual_type, expanded_actual, actual_size)
-                    parsed_actuals.append(item)
-
-                    if actual_kind == ARG_STAR and is_variadic_tuple(expanded_actual):
-                        seen_variadic = True
-                        middle_actuals.extend(suffix_actuals)
-                        middle_actuals.append(item)
-                        suffix_actuals.clear()
-                    elif seen_variadic:
-                        suffix_actuals.append(item)
-                    else:
-                        prefix_actuals.append(item)
-
-                # create a deque of the parsed actuals
-                from collections import deque
-
-                actual_queue = deque(parsed_actuals)
-
-                expected_prefix_types: deque[Type] = deque()
-                expected_suffix_types: deque[Type] = deque()
-                expected_middle_types: deque[Type] = deque()
-
-                formal_prefix_index = 0
-                formal_suffix_index = 0
-
-                # first, match prefix items left to right
-                while actual_queue and formal_prefix_index < formal_prefix_length:
-                    # get the actual from the front of the queue
-                    current = actual_queue.popleft()
-
-                    if current.actual_kind == ARG_POS:
-                        expected_type = tuple_helper.get_item(formal_tuple, formal_prefix_index)
-                        assert expected_type is not None, "formal_tuple unexpectedly exhausted"
-                        formal_prefix_index += 1
-                        expected_prefix_types.append(expected_type)
-
-                    elif current.actual_kind == ARG_STAR:
-                        p_e = get_proper_type(current.expanded_type)
-                        assert isinstance(p_e, TupleType)
-                        # check the size of the actual. If it is variadic or larger than the remaining prefix,
-                        # put it back into the queue and break
-                        size = p_e.minimum_length
-                        if p_e.is_variadic or formal_prefix_index + size > formal_prefix_length:
-                            actual_queue.appendleft(current)
-                            break
-                        # otherwise, determine the expected type and append it.
-                        expected_type = tuple_helper.get_slice(
-                            formal_tuple,
-                            start=formal_prefix_index,
-                            stop=formal_prefix_index + size,
-                        )
-                        formal_prefix_index += size
-                        expected_prefix_types.append(expected_type)
-
-                    else:
-                        assert False
-
-                # secondly match suffix items right to left
-                while actual_queue and formal_suffix_index < formal_suffix_length:
-                    # get the actual from the end of the queue
-                    current = actual_queue.pop()
-
-                    if current.actual_kind == ARG_POS:
-                        expected_type = tuple_helper.get_item(
-                            formal_tuple, -formal_suffix_index - 1
-                        )
-                        assert expected_type is not None, "formal_tuple unexpectedly exhausted"
-                        formal_suffix_index += 1
-                        expected_suffix_types.appendleft(expected_type)
-
-                    elif current.actual_kind == ARG_STAR:
-                        p_e = get_proper_type(current.expanded_type)
-                        assert isinstance(p_e, TupleType)
-                        # check the size of the actual. If it is variadic or larger than the remaining suffix,
-                        # put it back into the queue and break
-                        size = p_e.minimum_length
-                        if p_e.is_variadic or formal_suffix_index + size > formal_suffix_length:
-                            actual_queue.append(current)
-                            break
-                        # otherwise, we can consume it
-                        expected_type = tuple_helper.get_slice(
-                            formal_tuple,
-                            start=-formal_suffix_index - size,
-                            # since negative integer zero is not a thing we need to use None in this case.
-                            stop=None if formal_suffix_index == 0 else -formal_suffix_index,
-                        )
-                        formal_suffix_index += size
-                        expected_suffix_types.appendleft(expected_type)
-
-                    else:
-                        assert False
-
-                # finally, match the remaining items against the unpack part
-                while actual_queue:
-                    current = actual_queue.popleft()
-
-                    if current.actual_kind == ARG_POS:
-                        expected_type = tuple_helper.get_item(formal_tuple, formal_prefix_index)
-                        assert expected_type is not None, "formal_tuple unexpectedly exhausted"
-                        expected_middle_types.append(expected_type)
-                        formal_prefix_index += 1
-
-                    elif current.actual_kind == ARG_STAR:
-                        p_e = get_proper_type(current.expanded_type)
-                        assert isinstance(p_e, TupleType)
-                        prefix_size = len(p_e.prefix)
-                        suffix_size = len(p_e.suffix)
-                        expected_type = tuple_helper.get_slice(
-                            formal_tuple,
-                            start=formal_prefix_index,
-                            stop=None if formal_suffix_index == 0 else -formal_suffix_index,
-                        )
-                        formal_prefix_index += prefix_size
-                        formal_suffix_index += suffix_size
-                        expected_middle_types.append(expected_type)
-
-                    else:
-                        assert False
-
-                expected_types = (
-                    expected_prefix_types + expected_middle_types + expected_suffix_types
-                )
-                assert (
-                    len(expected_types)
-                    == len(actual_types)
-                    == len(actual_kinds)
-                    == len(expanded_actuals)
-                    == len(actuals)
-                )
-                # finally check the types in order
-                for actual, actual_type, actual_kind, expanded_actual, expected_type in zip(
-                    actuals, actual_types, actual_kinds, expanded_actuals, expected_types
-                ):
+                for parsed_actual, expected_type in zip(parsed_actuals, expected_types):
                     check_arg(
-                        expanded_actual,
-                        actual_type,
-                        actual_kind,
+                        parsed_actual.expanded,
+                        parsed_actual.type,
+                        parsed_actual.kind,
                         expected_type,
-                        actual + 1,
+                        parsed_actual.id + 1,
                         i + 1,
                         callee,
                         object_type,
-                        args[actual],
+                        args[parsed_actual.id],
                         context,
                     )
 
@@ -6983,9 +6796,131 @@ def _validate_formal_to_actual(
             assert False, f"Unexpected formal kind {formal_kind}"
 
 
-class _Actual(NamedTuple):
-    actual_id: int
-    actual_kind: ArgKind
-    actual_type: Type
-    expanded_type: Type
-    actual_size: int
+def map_actuals_to_star_parameter(
+    formal_tuple: TupleType, parsed_actuals: list[ParsedActual]
+) -> Sequence[Type]:
+    """Get the expected type for a *args parameter in a function definition.
+
+    Args:
+        formal_tuple: the formal tuple type of the *args parameter.
+        parsed_actuals: the actual arguments passed to the function.
+
+    Returns:
+        expected_types: list containing the expected type for each actual.
+
+    See Also:
+        Inspired by the algorithm sketched out in
+        https://github.com/python/mypy/issues/19692#issuecomment-3211743894
+    """
+    # convert parsed_actuals into a deque for efficient popping from both ends
+    actual_queue = deque(parsed_actuals)
+
+    # setup pointers and lengths for the formal tuple
+    formal_unpack_index = formal_tuple.unpack_index
+    assert formal_unpack_index is not None
+    formal_prefix_length = len(formal_tuple.prefix)
+    formal_suffix_length = len(formal_tuple.suffix)
+    formal_prefix_index = 0
+    formal_suffix_index = 0
+
+    # lists to hold the expected types for each part
+    expected_prefix_types: list[Type] = []
+    expected_middle_types: list[Type] = []
+    reversed_suffix_types: list[Type] = []
+
+    # utility class for accessing very special getitem and slice method with:
+    # for positive indices >= unpack_index, the item is the variadic iterable type.
+    # for negative indices <= -unpack_index, the item is the variadic iterable type.
+    tuple_helper = TupleHelper(formal_tuple)
+
+    # 1. match prefix items left to right
+    while actual_queue and formal_prefix_index < formal_prefix_length:
+        # get the actual from the front of the queue
+        current = actual_queue.popleft()
+
+        if current.kind == ARG_POS:
+            expected_type = tuple_helper.get_item(formal_tuple, formal_prefix_index)
+            assert expected_type is not None, "formal_tuple unexpectedly exhausted"
+            formal_prefix_index += 1
+            expected_prefix_types.append(expected_type)
+
+        elif current.kind == ARG_STAR:
+            p_e = get_proper_type(current.expanded)
+            assert isinstance(p_e, TupleType)
+            # check the size of the actual. If it is variadic or larger than the remaining prefix,
+            # put it back into the queue and break
+            size = p_e.minimum_length
+            if p_e.is_variadic or formal_prefix_index + size > formal_prefix_length:
+                actual_queue.appendleft(current)
+                break
+            # otherwise, determine the expected type and append it.
+            expected_type = tuple_helper.get_slice(
+                formal_tuple, start=formal_prefix_index, stop=formal_prefix_index + size
+            )
+            formal_prefix_index += size
+            expected_prefix_types.append(expected_type)
+
+        else:
+            assert False
+
+    # 2. match suffix items right to left
+    while actual_queue and formal_suffix_index < formal_suffix_length:
+        # get the actual from the end of the queue
+        current = actual_queue.pop()
+
+        if current.kind == ARG_POS:
+            expected_type = tuple_helper.get_item(formal_tuple, -formal_suffix_index - 1)
+            assert expected_type is not None, "formal_tuple unexpectedly exhausted"
+            formal_suffix_index += 1
+            reversed_suffix_types.append(expected_type)
+
+        elif current.kind == ARG_STAR:
+            p_e = get_proper_type(current.expanded)
+            assert isinstance(p_e, TupleType)
+            # check the size of the actual. If it is variadic or larger than the remaining suffix,
+            # put it back into the queue and break
+            size = p_e.minimum_length
+            if p_e.is_variadic or formal_suffix_index + size > formal_suffix_length:
+                actual_queue.append(current)
+                break
+            # otherwise, we can consume it
+            expected_type = tuple_helper.get_slice(
+                formal_tuple,
+                start=-formal_suffix_index - size,
+                # since negative integer zero is not a thing we need to use None in this case.
+                stop=None if formal_suffix_index == 0 else -formal_suffix_index,
+            )
+            formal_suffix_index += size
+            reversed_suffix_types.append(expected_type)
+
+        else:
+            assert False
+
+    # 3. match the remaining items against the unpack part, left to right
+    while actual_queue:
+        current = actual_queue.popleft()
+
+        if current.kind == ARG_POS:
+            expected_type = tuple_helper.get_item(formal_tuple, formal_prefix_index)
+            assert expected_type is not None, "formal_tuple unexpectedly exhausted"
+            expected_middle_types.append(expected_type)
+            formal_prefix_index += 1
+
+        elif current.kind == ARG_STAR:
+            p_e = get_proper_type(current.expanded)
+            assert isinstance(p_e, TupleType)
+            prefix_size = len(p_e.prefix)
+            suffix_size = len(p_e.suffix)
+            expected_type = tuple_helper.get_slice(
+                formal_tuple,
+                start=formal_prefix_index,
+                stop=None if formal_suffix_index == 0 else -formal_suffix_index,
+            )
+            formal_prefix_index += prefix_size
+            formal_suffix_index += suffix_size
+            expected_middle_types.append(expected_type)
+
+        else:
+            assert False
+
+    return expected_prefix_types + expected_middle_types + reversed_suffix_types[::-1]

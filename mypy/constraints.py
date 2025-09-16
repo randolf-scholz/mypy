@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
-from typing import TYPE_CHECKING, Final, cast
+from typing import TYPE_CHECKING, Final, NamedTuple, cast
 from typing_extensions import TypeGuard
 
 import mypy.subtypes
@@ -13,6 +13,7 @@ from mypy.erasetype import erase_typevars
 from mypy.maptype import map_instance_to_supertype
 from mypy.nodes import (
     ARG_NAMED,
+    ARG_NAMED_OPT,
     ARG_OPT,
     ARG_POS,
     ARG_STAR,
@@ -143,35 +144,31 @@ def infer_constraints_for_callable(
         formal_name = callee.arg_names[i]
         formal_type = get_proper_type(callee.arg_types[i])
 
-        actual_arg_types: list[Type] = []
-        actual_arg_kinds: list[ArgKind] = []
-        actual_arg_names: list[str | None] = []
-        expanded_actuals: list[Type] = []
-
-        for actual in actuals:
-            actual_arg_type = arg_types[actual]
-
-            if actual_arg_type is None:
-                continue
-
-            actual_arg_kind = arg_kinds[actual]
-            actual_arg_name = arg_names[actual]
-            expanded_actual = mapper.expand_actual_type(
-                actual_arg_type, actual_arg_kind, formal_name, formal_kind
+        # 1. expand all the actual types.
+        parsed_actuals = [
+            ParsedActual(
+                id=actual,
+                type=arg_types[actual],
+                kind=arg_kinds[actual],
+                name=arg_names[actual],
+                expanded=mapper.expand_actual_type(
+                    arg_types[actual], arg_kinds[actual], formal_name, formal_kind
+                ),
             )
-
-            actual_arg_types.append(actual_arg_type)
-            actual_arg_kinds.append(actual_arg_kind)
-            actual_arg_names.append(actual_arg_name)
-            expanded_actuals.append(expanded_actual)
+            for actual in actuals
+            if arg_types[actual] is not None
+        ]
 
         # 2. depending on the formal kind, we can infer constraints.
-        if formal_kind not in (ARG_STAR, ARG_STAR2):
-            # there should be at most one actual for ARG_POS, ARG_OPT, or ARG_NAMED
-            # assert len(expanded_actuals) <= 1, f"{callee, formal_name, formal_kind, expanded_actuals}"
-            for expanded_actual in expanded_actuals:
-                c = infer_constraints(formal_type, expanded_actual, SUPERTYPE_OF)
+        if formal_kind in (ARG_POS, ARG_OPT, ARG_NAMED, ARG_NAMED_OPT):
+            # There should be at most one actual mapped to a formal of these kinds.
+            # Multiple actuals indicate a TOO_MANY_ARGUMENTS error, which is handled
+            # elsewhere. Therefore, for the purpose of constraints only consider the first actual.
+            for parsed_actual in parsed_actuals:
+                c = infer_constraints(formal_type, parsed_actual.expanded, SUPERTYPE_OF)
                 constraints.extend(c)
+                break  # only consider the first actual, multiple actuals are an error
+
         elif param_spec and not incomplete_star_mapping:
             assert formal_kind in (ARG_STAR, ARG_STAR2)
             assert isinstance(formal_type, ParamSpecType)
@@ -179,22 +176,22 @@ def infer_constraints_for_callable(
             # constraints, instead store them and infer single constraint at the end.
             # It is impossible to map actual kind to formal kind, so use some heuristic.
             # This inference is used as a fallback, so relying on heuristic should be OK.
-            for actual_kind, actual_name, expanded_actual in zip(
-                actual_arg_kinds, actual_arg_names, expanded_actuals
-            ):
+            for parsed_actual in parsed_actuals:
+                actual_kind = parsed_actual.kind
+                actual_name = parsed_actual.name
+                expanded_type = parsed_actual.expanded
+
                 if actual_kind in (ARG_POS, ARG_NAMED):
-                    param_spec_arg_types.append(expanded_actual)
+                    param_spec_arg_types.append(expanded_type)
                     param_spec_arg_kinds.append(ARG_POS)
                     param_spec_arg_names.append(actual_name)
                 elif actual_kind == ARG_STAR:
-                    # TODO: shouldn't this re-normalization be done in the constructor
-                    # of types.Parameters?
-                    expanded_actual = unparse_star_parameter(expanded_actual)
-                    param_spec_arg_types.append(expanded_actual)
+                    # TODO: shouldn't this re-normalization be done in the constructor of types.Parameters?
+                    param_spec_arg_types.append(unparse_star_parameter(expanded_type))
                     param_spec_arg_kinds.append(actual_kind)
                     param_spec_arg_names.append(actual_name)
                 elif actual_kind == ARG_STAR2:
-                    param_spec_arg_types.append(expanded_actual)
+                    param_spec_arg_types.append(expanded_type)
                     param_spec_arg_kinds.append(actual_kind)
                     param_spec_arg_names.append(actual_name)
                 else:
@@ -202,39 +199,34 @@ def infer_constraints_for_callable(
                     assert False, f"Unexpected actual kind {actual_kind}"
 
         elif formal_kind == ARG_STAR:
-            # combine all the actuals into a single tuple type
-            items: list[Type] = []
-            for e, actual_kind in zip(expanded_actuals, actual_arg_kinds):
-                if actual_kind == ARG_STAR:
-                    p_e = get_proper_type(e)
-                    assert isinstance(p_e, TupleType)
-                    items.extend(p_e.items)
-                elif actual_kind == ARG_POS:
-                    items.append(e)
-                else:
-                    assert False, f"Unexpected actual kind {actual_kind}"
-
-            # concatenate all these tuples into a normalized tuple type
-            actual_tuple = context.make_tuple_type(items)
-            # actual_tuple = context.concatenate_tuples(expanded_actuals)
-
-            # There are 3 possible cases for formal_type:
-            #    1. ParamSpecType, which happens for annotation ``*args: P.args``
-            #    2. An UnpackType, which happens for annotation ``*args: *Ts``, ``*args: *tuple[T, ...]`` or ``*args: *tuple[int, int]``
-            #    3. Any other type, which happens for annotation ``*args: T``.
-            #       These are functionally equivalent to ``*args: *tuple[T, ...]``
-
             # parse the formal type into a tuple
             formal_tuple = mapper.parse_star_parameter(formal_type)
 
+            # combine all the actuals into a single tuple type
+            items: list[Type] = []
+            for parsed_actual in parsed_actuals:
+                actual_kind = parsed_actual.kind
+                expanded_type = parsed_actual.expanded
+
+                if actual_kind == ARG_STAR:
+                    p_e = get_proper_type(expanded_type)
+                    assert isinstance(p_e, TupleType)
+                    items.extend(p_e.items)
+                elif actual_kind == ARG_POS:
+                    items.append(expanded_type)
+                else:
+                    assert False, f"Unexpected actual kind {actual_kind}"
+            actual_tuple = context.make_tuple_type(items)
+
+            # infer constraints from these two tuples
             c = infer_constraints(formal_tuple, actual_tuple, SUPERTYPE_OF)
             constraints.extend(c)
-        elif formal_kind == ARG_STAR2:
-            assert not isinstance(formal_type, UnpackType), "not handled here?!"
 
-            for expanded_actual in expanded_actuals:
-                c = infer_constraints(formal_type, expanded_actual, SUPERTYPE_OF)
+        elif formal_kind == ARG_STAR2:
+            for parsed_actual in parsed_actuals:
+                c = infer_constraints(formal_type, parsed_actual.expanded, SUPERTYPE_OF)
                 constraints.extend(c)
+
         else:
             assert False, f"Unexpected formal kind {formal_kind}"
     if (
@@ -1959,3 +1951,13 @@ def filter_imprecise_kinds(cs: list[Constraint]) -> list[Constraint]:
         if not isinstance(c.target, Parameters) or not c.target.imprecise_arg_kinds:
             new_cs.append(c)
     return new_cs
+
+
+class ParsedActual(NamedTuple):
+    r"""Simple record for an actual argument in a function call."""
+
+    id: int
+    kind: ArgKind
+    type: Type
+    expanded: Type
+    name: str | None = None

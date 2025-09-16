@@ -2599,3 +2599,41 @@ def run3(predicate: Callable[Concatenate[int, str, _P], None], *args: _P.args, *
                                            # E: Argument 1 has incompatible type "*tuple[Union[int, str], ...]"; expected "str" \
                                            # E: Argument 1 has incompatible type "*tuple[Union[int, str], ...]"; expected "_P.args"
 [builtins fixtures/paramspec.pyi]
+
+
+[case testParamSpecArgsAsTupleInteraction]
+# https://github.com/python/mypy/issues/19663
+# flags: --warn-unreachable
+from typing import Callable, TypeVar
+from typing_extensions import ParamSpec, TypeVarTuple, Unpack
+
+P = ParamSpec("P")
+Ts = TypeVarTuple("Ts")
+TupleT = TypeVar("TupleT", bound=tuple)
+
+def as_tuple(*args: Unpack[Ts]) -> tuple[Unpack[Ts]]: return args
+def tuple_identity(t: TupleT) -> TupleT: return t
+def tuple_identity2(t: tuple[Unpack[Ts]]) -> tuple[Unpack[Ts]]: return t
+
+def test_paramspec(
+    dummy: Callable[P, None],  # ensure P is bound
+    /,
+    *args: P.args,
+    **kwargs: P.kwargs,
+) -> None:
+    reveal_type( args )                 # N: Revealed type is "P.args`-1"
+    reveal_type( (*args,) )             # N: Revealed type is "P.args`-1"
+    reveal_type(tuple_identity(args))   # N: Revealed type is "P.args`-1"
+    reveal_type(as_tuple(*args))        # N: Revealed type is "tuple[Unpack[P.args`-1]]"
+    # TODO: this one should possible be tuple[Any, ...] ?
+    reveal_type( tuple(args) )          # N: Revealed type is "builtins.tuple[builtins.object, ...]"
+    # TODO: this one should give the same result as tuple_identity above?
+    reveal_type(tuple_identity2(args))  # N: Revealed type is "builtins.tuple[Never, ...]" \
+                                        # E: Argument 1 to "tuple_identity2" has incompatible type "P.args"; expected "tuple[Never, ...]"
+
+    if isinstance(args, tuple):
+        pass
+    else:
+        reveal_type(args)  # N: Revealed type is "P.args`-1"
+
+[builtins fixtures/paramspec.pyi]

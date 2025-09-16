@@ -715,7 +715,7 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
 
     def visit_type_var_tuple(self, template: TypeVarTupleType) -> list[Constraint]:
         actual = self.actual
-        if isinstance(actual, (TupleType, TypeVarTupleType)) or (
+        if isinstance(actual, (TupleType, TypeVarTupleType, ParamSpecType)) or (
             isinstance(actual, Instance) and actual.type.fullname == "builtins.tuple"
         ):
             # Ts can be bounded by other Ts, TupleType or variadic tuple

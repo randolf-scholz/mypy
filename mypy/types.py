@@ -37,6 +37,9 @@ from mypy.options import Options
 from mypy.state import state
 from mypy.util import IdMapper
 
+if TYPE_CHECKING:
+    from mypy.infer import TupleInstanceType
+
 T = TypeVar("T")
 
 JsonDict: _TypeAlias = dict[str, Any]
@@ -2932,7 +2935,7 @@ class TupleType(ProperType):
         """
         return len(self.prefix) + len(self.suffix)
 
-    def simplify(self) -> Type:
+    def simplify(self) -> TupleType | TupleInstanceType | ParamSpecType:
         r"""Simplify a tuple type.
 
         1. expand nested unpacks
@@ -2950,8 +2953,13 @@ class TupleType(ProperType):
                 proper_unpacked = get_proper_type(first_item.type)
                 if isinstance(proper_unpacked, TupleType):
                     return proper_unpacked.simplify()
-                elif isinstance(proper_unpacked, (Instance, ParamSpecType)):
-                    return first_item.type
+                elif isinstance(proper_unpacked, ParamSpecType):
+                    return proper_unpacked
+                elif (
+                    isinstance(proper_unpacked, Instance)
+                    and proper_unpacked.type.fullname == "builtins.tuple"
+                ):
+                    return cast("TupleInstanceType", proper_unpacked)
                 elif isinstance(proper_unpacked, TypeVarTupleType):
                     # do not unpack TypeVarTupleType
                     return self

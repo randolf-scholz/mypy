@@ -31,7 +31,7 @@ DirtyUnpackType = NewType("DirtyUnpackType", UnpackType)
 r"""An UnpackType that may contain unexpected members, such as TypeList or UnionType."""
 
 
-def is_variadic_tuple(typ: Type) -> bool:
+def is_variadic_tuple(typ: Type, /) -> bool:
     p_t = get_proper_type(typ)
     return isinstance(p_t, TupleType) and p_t.is_variadic
 
@@ -54,7 +54,7 @@ class TupleHelper:
 
     tuple_typeinfo: TypeInfo
 
-    def __init__(self, tuple_type: TypeInfo | TupleType | Instance) -> None:
+    def __init__(self, tuple_type: TypeInfo | TupleType | Instance, /) -> None:
         if isinstance(tuple_type, Instance):
             tuple_type = tuple_type.type
 
@@ -75,7 +75,7 @@ class TupleHelper:
         p_t = get_proper_type(typ)
         return isinstance(p_t, Instance) and p_t.type == self.tuple_typeinfo
 
-    def is_tuple_instance_subtype(self, typ: Type) -> TypeGuard[Instance]:
+    def is_tuple_instance_subtype(self, typ: Type, /) -> TypeGuard[Instance]:
         """Check if the type is a subtype of tuple[T, ...] for some T."""
         from mypy.subtypes import is_subtype
 
@@ -109,7 +109,36 @@ class TupleHelper:
         fallback = self._make_fallback_for_tuple_items(items)
         return TupleType(items, fallback=fallback)
 
-    def _make_fallback_for_tuple_items(self, items: Sequence[Type]) -> Instance:
+    def get_variadic_fallback(self, unpack: UnpackType, /) -> TupleInstanceType:
+        """Get a tuple fallback for the content of an UnpackType."""
+        unpacked = get_proper_type(unpack.type)
+
+        if self.is_tuple_instance_type(unpacked):
+            return unpacked
+
+        elif isinstance(unpacked, TypeVarTupleType):
+            tuple_fallback = unpacked.tuple_fallback.copy_modified(
+                args=[AnyType(TypeOfAny.implementation_artifact)]
+            )
+            assert self.is_tuple_instance_type(tuple_fallback)
+            return tuple_fallback
+
+        elif isinstance(unpacked, ParamSpecType):
+            upper_bound = get_proper_type(unpacked.upper_bound)
+            assert self.is_tuple_instance_type(upper_bound)
+            tuple_fallback = upper_bound.copy_modified(
+                args=[AnyType(TypeOfAny.implementation_artifact)]
+            )
+            assert self.is_tuple_instance_type(tuple_fallback)
+            return tuple_fallback
+
+        elif isinstance(unpacked, TupleType):
+            raise TypeError(f"Expected unpack to be a pure variadic type, got {unpacked}")
+
+        else:
+            raise TypeError(f"Got unexpected unpack type {unpacked}")
+
+    def _make_fallback_for_tuple_items(self, items: Sequence[Type], /) -> Instance:
         item_types = []
         for item in flatten_nested_tuples(items):
             if isinstance(item, UnpackType):
@@ -128,7 +157,7 @@ class TupleHelper:
         combined_item_type = make_simplified_union(item_types)
         return self.make_tuple_instance_type(combined_item_type)
 
-    def _validate_items_for_tuple_type(self, items: Sequence[Type]) -> None:
+    def _validate_items_for_tuple_type(self, items: Sequence[Type], /) -> None:
         """Validate that the items are valid for a TupleType."""
         seen_unpack = 0
         for item in flatten_nested_tuples(items):
@@ -171,7 +200,7 @@ class TupleHelper:
         else:
             assert False, f"Unexpected unpacked type: {unpacked}"
 
-    def get_item(self, tup: TupleType, index: int) -> Type | None:
+    def get_item(self, tup: TupleType, /, index: int) -> Type | None:
         r"""Get the item at the given index, treating the variadic part as arbitrarily long.
 
         Returns:
@@ -204,7 +233,7 @@ class TupleHelper:
         return self._get_variadic_item_type_from_unpack(item)
 
     def get_slice(
-        self, tup: TupleType, start: int | None, stop: int | None, step: int = 1
+        self, tup: TupleType, /, start: int | None, stop: int | None, step: int = 1
     ) -> TupleType:
         r"""Get a slice of the tuple, treating the variadic part as arbitrarily long.
 
@@ -634,7 +663,7 @@ class TupleNormalForm(NamedTuple):
         )
 
     @staticmethod
-    def combine_concat(tnfs: Sequence[TupleNormalForm]) -> TupleNormalForm:
+    def combine_concat(tnfs: Sequence[TupleNormalForm], /) -> TupleNormalForm:
         """Combine sequence of TupleNormalForm into a single TupleNormalForm.
 
         essentially converts ``(*x1, ..., *xn)`` -> ``*x` where x = [*x1, ..., *xn]``

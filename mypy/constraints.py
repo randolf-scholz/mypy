@@ -66,7 +66,7 @@ from mypy.types_utils import is_union_with_any
 from mypy.typestate import type_state
 
 if TYPE_CHECKING:
-    from mypy.infer import ArgumentInferContext
+    from mypy.infer import ArgumentInferContext, TupleInstanceType
 
 SUBTYPE_OF: Final = 0
 SUPERTYPE_OF: Final = 1
@@ -715,6 +715,8 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
 
     def visit_type_var_tuple(self, template: TypeVarTupleType) -> list[Constraint]:
         actual = self.actual
+        if isinstance(actual, TupleType):
+            actual = actual.simplify()
         if isinstance(actual, (TupleType, TypeVarTupleType, ParamSpecType)) or (
             isinstance(actual, Instance) and actual.type.fullname == "builtins.tuple"
         ):
@@ -1024,6 +1026,7 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
         elif isinstance(actual, ParamSpecType):
             return infer_constraints(template, actual.upper_bound, self.direction)
         elif isinstance(actual, TypeVarTupleType):
+            # TODO: also consider case when template is a subclass of builtins.tuple.
             if template.type.fullname == "builtins.tuple":
                 # infer constraints for tuple[T, ...] vs Ts
                 # tuple[T, ...] :> Ts   =>   T :> Union[*Ts]
@@ -1252,46 +1255,29 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
     def visit_tuple_type(self, template: TupleType) -> list[Constraint]:
         # NOTE: Expects a normalized TupleType, i.e. one with at most one Unpack,
         #  and the Unpack should be flattened, i.e. only contain a TypeVarTuple or Tuple Instance.
-        from mypy.tuple_normal_form import TupleHelper, get_std_tuple_typeinfo
+        from mypy.tuple_normal_form import TupleHelper
 
         actual = self.actual
-        std_tuple_typeinfo = get_std_tuple_typeinfo(template)
-        tuple_helper = TupleHelper(std_tuple_typeinfo)
+        tuple_helper = TupleHelper(template)
 
         if tuple_helper.is_tuple_instance_subtype(actual):
-            # reinterpret actual as tuple[*tuple[T, ...]]
+            # reinterpret tuple[T, ...] as tuple[*tuple[T, ...]]
             as_tuple_instance = tuple_helper.as_tuple_instance_type(actual)
             actual = TupleType([UnpackType(as_tuple_instance)], fallback=as_tuple_instance)
 
         if isinstance(actual, TupleType):
-            # Consider both tuples in Tuple Normal Form, i.e.
-            # template: tuple[P1, ..., Pn, *Us?, S1, ..., Sm]
-            # actual:   tuple[A1, ..., Ak, *Vs?, B1, ..., Bl]
-            # since either can be variadic or not, there are four cases to consider:
-            # 1. both template and actual are variadic
-            # 2. template is variadic, but actual is not variadic
-            # 3. template is not variadic, but actual is variadic
-            # 4. neither template nor actual are variadic
             constraints: list[Constraint] = []
 
             if (
                 actual.partial_fallback.type.is_named_tuple
                 and template.partial_fallback.type.is_named_tuple
             ):
-                # For named tuples using just the fallbacks usually gives better results.
-                constraints.extend(
-                    infer_constraints(
-                        template.partial_fallback, actual.partial_fallback, self.direction
-                    )
+                # For named tuples we additionally consider type-specific constraints.
+                constraints += infer_constraints(
+                    template.partial_fallback, actual.partial_fallback, self.direction
                 )
 
-            actual_prefix = actual.prefix
-            actual_suffix = actual.suffix
-            actual_unpack = actual.unpack
-            actual_prefix_size = len(actual_prefix)
-            actual_suffix_size = len(actual_suffix)
-            actual_size = actual_prefix_size + actual_suffix_size
-
+            # setup: consider prefix-, unpack- and suffix- part of each tuple
             template_prefix = template.prefix
             template_suffix = template.suffix
             template_unpack = template.unpack
@@ -1299,60 +1285,45 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
             template_suffix_size = len(template_suffix)
             template_size = template_prefix_size + template_suffix_size
 
-            # a tuple[T, ...] that can be used as a fallback for unpacked part
-            actual_unpack_fallback: UnpackType | None
-            # the generic type T of actual_unpack_fallback.
-            actual_unpack_item_type: Type | None
+            actual_prefix = actual.prefix
+            actual_suffix = actual.suffix
+            actual_unpack = actual.unpack
+            actual_prefix_size = len(actual_prefix)
+            actual_suffix_size = len(actual_suffix)
+            actual_size = actual_prefix_size + actual_suffix_size
+            # a tuple[T, ...] that can be used as a fallback for the unpack part
+            actual_variadic_fallback: TupleInstanceType | None = (
+                None
+                if actual_unpack is None
+                else tuple_helper.get_variadic_fallback(actual_unpack)
+            )
+            actual_variadic_item_type: Type | None = (
+                None if actual_variadic_fallback is None else actual_variadic_fallback.args[0]
+            )
 
-            # determine the actual generic type for the unpacked part
-            if actual_unpack is None:
-                actual_unpack_item_type = None
-                actual_unpack_fallback = None
-            else:
-                actual_unpacked = get_proper_type(actual_unpack.type)
-                if isinstance(actual_unpacked, TypeVarTupleType):
-                    # If *Vs is a TypeVarTuple, theoretically one should bind P1, ..., Pk, S1, ..., Sm
-                    # to indexed items of Vs, and Us to a slice of Vs. However, this functionality
-                    # is not part of the type system.
-                    # Therefore, instead we treat `Vs` as if it were `tuple[Any, ...]`.
-                    actual_unpack_item_type = AnyType(TypeOfAny.from_omitted_generics)
-                    # use Unpack[tuple[Any, ...]] as a fallback for the unpacked part
-                    actual_unpack_fallback = UnpackType(
-                        actual_unpacked.tuple_fallback.copy_modified(
-                            args=[actual_unpack_item_type]
-                        )
-                    )
-                elif isinstance(actual_unpacked, ParamSpecType):
-                    actual_unpack_item_type = AnyType(TypeOfAny.from_omitted_generics)
-                    upper_bound = get_proper_type(actual_unpacked.upper_bound)
-                    assert (
-                        isinstance(upper_bound, Instance)
-                        and upper_bound.type.fullname == "builtins.tuple"
-                    )
-                    actual_unpack_fallback = UnpackType(
-                        upper_bound.copy_modified(args=[actual_unpack_item_type])
-                    )
-                elif (
-                    isinstance(actual_unpacked, Instance)
-                    and actual_unpacked.type.fullname == "builtins.tuple"
-                ):
-                    # If *Vs is a tuple, we can expand it out to a sequence of items.
-                    actual_unpack_fallback = actual_unpack
-                    actual_unpack_item_type = actual_unpacked.args[0]
-                else:
-                    raise NotImplementedError(f"Got unexpected unpack type {actual_unpacked}")
+            # Consider both tuples in Tuple Normal Form, i.e.
+            #       template: tuple[P1, ..., Pn, *Us?, S1, ..., Sm]
+            #       actual:   tuple[A1, ..., Ak, *Vs?, B1, ..., Bl]
+            # since either can be variadic or not, there are four cases to consider:
+            #       1. both template and actual are variadic
+            #       2. template is variadic, but actual is not variadic
+            #       3. template is not variadic, but actual is variadic
+            #       4. neither template nor actual are variadic
 
+            # Case 1. neither is variadic.
+            #       template: tuple[T1, ..., Tm]
+            #       actual:   tuple[A1, ..., An]
             if actual_unpack is None and template_unpack is None:
-                # template: tuple[T1, ..., Tm]
-                # actual:  tuple[A1, ..., An]
                 assert not actual_suffix and not template_suffix
                 if len(template_prefix) == len(actual_prefix):
                     for t_item, a_item in zip(template_prefix, actual_prefix):
                         constraints += infer_constraints(t_item, a_item, self.direction)
-                # otherwise, no constraints can be inferred
+                # otherwise, no constraints can be inferred as the tuples are incompatible.
+
+            # Case 2. template is variadic, actual is not variadic.
+            #       template: tuple[P1, ..., Pk, *Us, S1, ..., Sm]
+            #       actual:   tuple[A1, ..., An]
             elif actual_unpack is None and template_unpack is not None:
-                # template: tuple[P1, ..., Pk, *Us, S1, ..., Sm]
-                # actual:  tuple[A1, ..., An]
                 assert not actual_suffix
                 actual_size = len(actual_prefix)
 
@@ -1360,7 +1331,7 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
                 template_suffix_size = len(template_suffix)
 
                 # there are enough actual items to match template prefix and suffix
-                if template.minimum_length <= actual_size:
+                if template_size <= actual_size:
                     # match prefix and suffix items one-to-one
                     # TODO: use zip with strict=True
                     for t_item, a_item in zip(
@@ -1382,18 +1353,18 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
                     )
                 # otherwise, no constraints can be inferred since the tuples are incompatible.
                 # (actual has too few items)
+
+            # Case 3. template is not variadic, actual is variadic.
+            #       template: tuple[T1, ..., Tm]
+            #       actual:   tuple[A1, ..., Ak, *Vs, B1, ..., Bl]
             elif actual_unpack is not None and template_unpack is None:
-                # template: tuple[T1, ..., Tm]
-                # actual:  tuple[A1, ..., Ak, *Vs, B1, ..., Bl]
                 assert not template_suffix
-                assert actual_unpack_item_type is not None
-                assert actual_unpack_fallback is not None
+                assert actual_variadic_item_type is not None
+                assert actual_variadic_fallback is not None
 
+                # fixed size tuple can't be a supertype of a variable length tuple
                 if self.direction == SUPERTYPE_OF:
-                    # fixed size tuple can't be a supertype of a variable length tuple
                     return []
-
-                assert self.direction == SUBTYPE_OF
 
                 if template_size >= actual_size:
                     # match prefix items one-to-one
@@ -1411,16 +1382,18 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
                         actual_prefix_size : template_size - actual_suffix_size
                     ]:
                         constraints += infer_constraints(
-                            t_item, actual_unpack_item_type, self.direction
+                            t_item, actual_variadic_item_type, self.direction
                         )
 
                 # otherwise, no constraints can be inferred since the tuples are incompatible.
-                # (actual as too many items)
+                # (actual has too many items)
+
+            # Case 4. both are variadic.
+            #       template: tuple[P1, ..., Pk, *Us, S1, ..., Sm]
+            #       actual:   tuple[A1, ..., Ak, *Vs, B1, ..., Bl]
             elif actual_unpack is not None and template_unpack is not None:
-                # template: tuple[P1, ..., Pk, *Us, S1, ..., Sm]
-                # actual:  tuple[A1, ..., Ak, *Vs, B1, ..., Bl]
-                assert actual_unpack_item_type is not None
-                assert actual_unpack_fallback is not None
+                assert actual_variadic_item_type is not None
+                assert actual_variadic_fallback is not None
 
                 # match prefix items one-by-one until one of the tuples runs out
                 for t_item, a_item in zip(template_prefix, actual_prefix):
@@ -1430,158 +1403,101 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
                 for t_item, a_item in zip(reversed(template_suffix), reversed(actual_suffix)):
                     constraints += infer_constraints(t_item, a_item, self.direction)
 
-                # region comment: how we deal with remaining items
-                # now there are 4 remaining cases:
-                #
-                # case 1:
-                #       template: tuple[P1, ..., Pk, *Us, S1, ..., Sm]
-                #       actual:  tuple[*Vs]
-                #           => infer_constraints(template, Vs)
-                # case 2:
-                #       template: tuple[*Us, S1, ..., Sm]
-                #       actual:  tuple[A1, ..., Ak, *Vs]
-                #           => There are potentially infinitely many solutions.
-                # case 3:
-                #       template: tuple[P1, ..., Pk, *Us]
-                #       actual:  tuple[*Vs, B1, ..., Bl]
-                #           => There are potentially infinitely many solutions.
-                # case 4:
-                #       template: tuple[*Us]
-                #       actual:  tuple[A1, ..., Ak, *Vs, B1, ..., Bl]
-                #         => infer_constraints(Us, actual)
-                #
-                # Example for case 3:
-                #       template: [T1, T2, T3, *Ts]
-                #       actual:   [*tuple[str, ...], int, int]
-                #       solutions:
-                #           Ts = (), T3 = int, T2 = int, T1 = str
-                #           Ts = (int,), T3 = int, T2 = str, T1 = str
-                #           Ts = (int, int), T3 = str, T2 = str, T1 = str
-                #           Ts = (str, int, int), T3 = str, T2 = str, T1 = str
-                #           Ts = (str, str, int, int), T3 = str, T2 = str, T1 = str
-                #           ...
-                #
-                # endregion
-
                 template_prefix_exhausted = template_prefix_size <= actual_prefix_size
                 template_suffix_exhausted = template_suffix_size <= actual_suffix_size
                 actual_prefix_exhausted = actual_prefix_size <= template_prefix_size
                 actual_suffix_exhausted = actual_suffix_size <= template_suffix_size
 
+                # Now, there are four sub-cases to consider:
+
+                # Case 4.1 template prefix and suffix are both exhausted
+                #       template: tuple[*Us]
+                #       actual:   tuple[A1, ..., Ak, *Vs, B1, ..., Bl]
                 if template_prefix_exhausted and template_suffix_exhausted:
-                    if actual_prefix_exhausted and actual_suffix_exhausted:
-                        # case 1a:
-                        #    template: tuple[*Us]
-                        #    actual:   tuple[*Vs]
-                        #       => *Us > *Vs
-                        constraints += infer_constraints(
-                            template_unpack.type, actual_unpack.type, self.direction
-                        )
-                    else:
-                        # case 1b:
-                        #       template: tuple[*Us]
-                        #       actual:  tuple[A1, ..., Ak, *Vs, B1, ..., Bl]
-                        # TODO: Use proper slicing helper function
-                        items = [
-                            *actual_prefix[template_prefix_size:],
-                            actual_unpack,
-                            *actual_suffix[: actual_suffix_size - template_suffix_size],
-                        ]
-                        remaining_actual = tuple_helper.make_tuple_type(items)
-                        constraints += infer_constraints(
-                            template_unpack.type, remaining_actual, self.direction
-                        )
+                    # We can match Us directly to the remaining actual items
+                    items = [
+                        *actual_prefix[template_prefix_size:],
+                        actual_unpack,
+                        *actual_suffix[: actual_suffix_size - template_suffix_size],
+                    ]
+                    remaining_actual = tuple_helper.make_tuple_type(items)
+                    constraints += infer_constraints(
+                        template_unpack.type, remaining_actual.simplify(), self.direction
+                    )
 
+                # case 4.2 template prefix exhausted, suffix not exhausted (m>0)
+                #       template: tuple[*Us, S1, ..., Sm]
+                #       actual:   tuple[A1, ..., Ak, *Vs]
                 elif template_prefix_exhausted and not template_suffix_exhausted:
-                    assert actual_suffix_exhausted
-                    # case 2:
-                    #       template: tuple[*Us, S1, ..., Sm]
-                    #       actual:  tuple[A1, ..., Ak, *Vs]
                     # Here, there are potentially infinitely many solutions.
-                    # We resolve it by matching [S1, ..., Sm] to *Vs, and *Us to [A1, ..., Ak, *Vs]
+                    # Moreover, TVTs do not support slicing or indexing.
+                    # We resolve it by using a tuple[T, ...] fallback for *Vs.
+                    assert actual_suffix_exhausted
 
-                    # match S1, ..., Sm to *Vs
-                    # Use actual_unpack_fallback here, since TVTs do not support slicing or indexing
+                    # match *Us to [A1, ..., Ak, *Vs], using actual_variadic_fallback for *Vs
+                    remaining_actual_prefix = actual_prefix[template_prefix_size:]
+                    remaining_actual = tuple_helper.make_tuple_type(
+                        [*remaining_actual_prefix, UnpackType(actual_variadic_fallback)]
+                    )
+                    constraints += infer_constraints(
+                        template_unpack.type, remaining_actual.simplify(), self.direction
+                    )
+
+                    # match S1, ..., Sm to *Vs, using actual_variadic_item_type for *Vs
                     for item in template_suffix[: template_suffix_size - actual_suffix_size]:
                         constraints += infer_constraints(
-                            item, actual_unpack_item_type, self.direction
+                            item, actual_variadic_item_type, self.direction
                         )
 
-                    if actual_prefix_exhausted:
-                        # case 2a:
-                        #       template: tuple[*Us, S1, ..., Sm]
-                        #       actual:  tuple[*Vs]
-                        # match *Us to fallback of *Vs
-                        constraints += infer_constraints(
-                            template_unpack.type, actual_unpack_fallback.type, self.direction
-                        )
-                    else:
-                        # match *Us to [A1, ..., Ak, *Vs], using actual_unpack_fallback for *Vs
-                        remaining_actual_prefix = actual_prefix[template_prefix_size:]
-                        remaining_actual = tuple_helper.make_tuple_type(
-                            [*remaining_actual_prefix, actual_unpack_fallback]
-                        )
-                        constraints += infer_constraints(
-                            template_unpack.type, remaining_actual, self.direction
-                        )
-
+                # case 4.3: template suffix exhausted, prefix not exhausted (k>0)
+                #       template: tuple[P1, ..., Pk, *Us]
+                #       actual:  tuple[*Vs, B1, ..., Bl]
                 elif not template_prefix_exhausted and template_suffix_exhausted:
-                    assert actual_prefix_exhausted
-                    # case 3:
-                    #       template: tuple[P1, ..., Pk, *Us]
-                    #       actual:  tuple[*Vs, B1, ..., Bl]
                     # Here, there are potentially infinitely many solutions.
-                    # We pick a specific one by matching [P1, ..., Pk] to *Vs, and *Us tp [*Vs, B1, ..., Bl]
+                    # Moreover, TVTs do not support slicing or indexing.
+                    # We resolve it by using a tuple[T, ...] fallback for *Vs.
+                    assert actual_prefix_exhausted
 
-                    # match P1, ..., Pk to *Vs
-                    # Use actual_unpack_fallback here, since TVTs do not support slicing or indexing
+                    # match [P1, ..., Pk] to [*Vs], using actual_variadic_item_type for *Vs
                     for item in template_prefix[actual_prefix_size:]:
                         constraints += infer_constraints(
-                            item, actual_unpack_item_type, self.direction
+                            item, actual_variadic_item_type, self.direction
                         )
 
-                    if actual_suffix_exhausted:
-                        # case 3a:
-                        #       template: tuple[P1, ..., Pk, *Us]
-                        #       actual:  tuple[*Vs]
-                        # match *Us to fallback of *Vs
-                        constraints += infer_constraints(
-                            template_unpack.type, actual_unpack_fallback.type, self.direction
-                        )
-                    else:
-                        # match *Us to B1, ..., Bl
-                        remaining_actual_suffix = actual_suffix[
-                            : actual_suffix_size - template_suffix_size
-                        ]
-                        remaining_actual = tuple_helper.make_tuple_type(
-                            [actual_unpack_fallback, *remaining_actual_suffix]
-                        )
-                        constraints += infer_constraints(
-                            template_unpack.type, remaining_actual, self.direction
-                        )
+                    # match [*Us] to [*Vs, B1, ..., Bl], using actual_variadic_fallback for *Vs
+                    remaining_actual_suffix = actual_suffix[
+                        : actual_suffix_size - template_suffix_size
+                    ]
+                    remaining_actual = tuple_helper.make_tuple_type(
+                        [UnpackType(actual_variadic_fallback), *remaining_actual_suffix]
+                    )
+                    constraints += infer_constraints(
+                        template_unpack.type, remaining_actual.simplify(), self.direction
+                    )
 
+                # Case 4.4: neither template prefix nor template suffix are exhausted
+                #       template: tuple[P1, ..., Pk, *Us, S1, ..., Sm]
+                #       actual:  tuple[*Vs]
                 elif not template_prefix_exhausted and not template_suffix_exhausted:
+                    # Use actual_variadic_fallback here, since TVTs do not support slicing or indexing
                     assert actual_prefix_exhausted and actual_suffix_exhausted
-                    # case 4:
-                    #       template: tuple[P1, ..., Pk, *Us, S1, ..., Sm]
-                    #       actual:  tuple[*Vs]
-                    # Use actual_unpack_fallback here, since TVTs do not support slicing or indexing
+
                     for t_item in template_prefix[actual_prefix_size:]:
                         constraints += infer_constraints(
-                            t_item, actual_unpack_item_type, self.direction
+                            t_item, actual_variadic_item_type, self.direction
                         )
                     for t_item in template_suffix[: template_suffix_size - actual_suffix_size]:
                         constraints += infer_constraints(
-                            t_item, actual_unpack_item_type, self.direction
+                            t_item, actual_variadic_item_type, self.direction
                         )
                     constraints += infer_constraints(
-                        template_unpack.type, actual_unpack_fallback.type, self.direction
+                        template_unpack.type, actual_variadic_fallback, self.direction
                     )
 
                 else:
                     assert False
             else:
-                assert False, "Unreachable"
+                assert False
 
             return constraints
         elif isinstance(actual, AnyType):
@@ -1954,7 +1870,7 @@ def filter_imprecise_kinds(cs: list[Constraint]) -> list[Constraint]:
 
 
 class ParsedActual(NamedTuple):
-    r"""Simple record for an actual argument in a function call."""
+    r"""Simple record type to hold parsed actual argument in a function call."""
 
     id: int
     kind: ArgKind

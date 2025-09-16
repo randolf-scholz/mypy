@@ -670,7 +670,7 @@ class SubtypeVisitor(TypeVisitor[bool]):
         right = self.right
         if isinstance(right, TupleType):
             # simplify tuple[*Ts] -> Ts, etc.
-            right = get_proper_type(right.simplify())
+            right = right.simplify()
         if isinstance(right, TypeVarTupleType) and right.id == left.id:
             return left.min_len >= right.min_len
         return self._is_subtype(left.upper_bound, self.right)

@@ -395,6 +395,7 @@ from typing import Tuple
 from typing_extensions import TypeVarTuple, Unpack
 
 Ts = TypeVarTuple("Ts")
+Vs = TypeVarTuple("Vs")
 
 def args_to_tuple(*args: Unpack[Ts]) -> Tuple[Unpack[Ts]]:
     x = with_prefix_suffix(*args)  # E: Argument 1 to "with_prefix_suffix" has incompatible type "*tuple[Unpack[Ts]]"; expected "Unpack[tuple[Unpack[tuple[Any, ...]], int]]"
@@ -404,10 +405,10 @@ def args_to_tuple(*args: Unpack[Ts]) -> Tuple[Unpack[Ts]]:
     reveal_type(y)  # N: Revealed type is "tuple[builtins.bool, builtins.str, Unpack[Ts`-1], builtins.int]"
     return args
 
-def with_prefix_suffix(*args: Unpack[Tuple[bool, str, Unpack[Ts], int]]) -> Tuple[bool, str, Unpack[Ts], int]:
-    reveal_type(args)  # N: Revealed type is "tuple[builtins.bool, builtins.str, Unpack[Ts`-1], builtins.int]"
-    reveal_type(args_to_tuple(*args))  # N: Revealed type is "tuple[builtins.bool, builtins.str, Unpack[Ts`-1], builtins.int]"
-    reveal_type(args_to_tuple(1, *args, 'a'))  # N: Revealed type is "tuple[Literal[1]?, builtins.bool, builtins.str, Unpack[Ts`-1], builtins.int, Literal['a']?]"
+def with_prefix_suffix(*args: Unpack[Tuple[bool, str, Unpack[Vs], int]]) -> Tuple[bool, str, Unpack[Vs], int]:
+    reveal_type(args)  # N: Revealed type is "tuple[builtins.bool, builtins.str, Unpack[Vs`-1], builtins.int]"
+    reveal_type(args_to_tuple(*args))  # N: Revealed type is "tuple[builtins.bool, builtins.str, Unpack[Vs`-1], builtins.int]"
+    reveal_type(args_to_tuple(1, *args, 'a'))  # N: Revealed type is "tuple[Literal[1]?, builtins.bool, builtins.str, Unpack[Vs`-1], builtins.int, Literal['a']?]"
     return args
 
 reveal_type(with_prefix_suffix(True, "bar", "foo", 5))  # N: Revealed type is "tuple[builtins.bool, builtins.str, Literal['foo']?, builtins.int]"

@@ -320,15 +320,13 @@ class ExpandTypeVisitor(TrivialSyntheticTypeTranslator):
         elif (
             isinstance(repl, Instance)
             and repl.type.fullname == "builtins.tuple"
-            or isinstance(repl, TypeVarTupleType)
+            or isinstance(repl, (TypeVarTupleType, ParamSpecType))
         ):
             return [UnpackType(typ=repl)]
         elif isinstance(repl, (AnyType, UninhabitedType)):
             # Replace *Ts = Any with *Ts = *tuple[Any, ...] and same for Never.
             # These types may appear here as a result of user error or failed inference.
             return [UnpackType(t.type.tuple_fallback.copy_modified(args=[repl]))]
-        elif isinstance(repl, ParamSpecType):
-            return [UnpackType(repl)]
         else:
             raise RuntimeError(f"Invalid type replacement to expand: {repl}")
 

@@ -215,17 +215,16 @@ class ArgTypeExpander:
         p_t = get_proper_type(t)
         assert isinstance(p_t, TupleType), f"Expected a parsed star argument, got {t}"
         simplified_type = p_t.simplify()
-        proper_simplified = get_proper_type(simplified_type)
 
         # convert tuple[T, ...] to plain T.
-        if isinstance(proper_simplified, Instance):
-            assert proper_simplified.type.fullname == "builtins.tuple"
-            return proper_simplified.args[0]
+        if isinstance(simplified_type, Instance):
+            assert simplified_type.type.fullname == "builtins.tuple"
+            return simplified_type.args[0]
         # wrap tuple and Ts in UnpackType
-        elif isinstance(proper_simplified, (TupleType, TypeVarTupleType)):
+        elif isinstance(simplified_type, (TupleType, TypeVarTupleType)):
             return UnpackType(simplified_type)
         # return ParamSpec as is.
-        elif isinstance(proper_simplified, ParamSpecType):
+        elif isinstance(simplified_type, ParamSpecType):
             return simplified_type
         else:
             assert False, f"Unexpected unpack content {simplified_type!r}"

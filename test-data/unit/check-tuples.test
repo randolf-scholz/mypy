@@ -1908,7 +1908,6 @@ def test_left_variadic_param_with_left_variadic_argument(
 [builtins fixtures/tuple.pyi]
 
 
-
 [case testLeftAndRightVariadicTypeVarTuple]
 # test solving cases with infinitely many solutions.
 from typing import TypeVar, TypeVarTuple, Unpack
@@ -1924,15 +1923,13 @@ T2 = TypeVar("T2")
 T3 = TypeVar("T3")
 Ts = TypeVarTuple("Ts")
 
-
 def left_variadic(
     *args: Unpack[tuple[Unpack[Ts], T1, T2, T3]],
-) -> tuple[*Ts, T1, T2, T3]: ...
+) -> tuple[Unpack[Ts], T1, T2, T3]: ...
 
 def right_variadic(
     *args: Unpack[tuple[T1, T2, T3, Unpack[Ts]]],
-) -> tuple[T1, T2, T3, *Ts]: ...
-
+) -> tuple[T1, T2, T3, Unpack[Ts]]: ...
 
 def test_right_variadic_param_with_left_variadic_argument(
     l0: tuple[Unpack[tuple[A, ...]]],

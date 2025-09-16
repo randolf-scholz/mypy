@@ -2388,9 +2388,6 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                     # check if the star argument has a minimum size (e.g. *tuple[*tuple[int, ...], int])
                     star_param_type = TupleNormalForm.from_star_parameter(callee.arg_types[i])
                     if star_param_type.minimum_length:
-                        #     self.msg.too_few_arguments_for_star_arg(
-                        #         callee, context, star_param_type.minimum_length
-                        #     )
                         self.msg.too_few_arguments(callee, context, actual_names)
             else:
                 if callee.param_spec() is not None and len(actuals) > 1:
@@ -5206,10 +5203,11 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
         # renormalize the items, combining multiple unpacks if needed.
         tnf = TupleNormalForm.from_items(items)
         tuple_result = tnf.materialize(context=self.argument_infer_context())
-        result = tuple_result.simplify()  # simplify tuple[*Ts] -> Ts, etc.
+        # simplify tuple[*tuple[T], ...] -> tuple[T, ...]
+        result = tuple_result.simplify()
         if seen_unpack_in_items:
             # Return already normalized tuple type just in case.
-            result = expand_type(result, {})
+            return expand_type(result, {})
         return result
 
     def fast_dict_type(self, e: DictExpr) -> Type | None:

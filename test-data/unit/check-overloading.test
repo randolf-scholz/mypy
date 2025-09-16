@@ -1894,6 +1894,58 @@ a: Any
 reveal_type(f(a))     # N: Revealed type is "def (*Any, **Any) -> Any"
 reveal_type(f(a)(a))  # N: Revealed type is "Any"
 
+[case testOverloadWithOverlappingItemsAndAnyArgument17]
+# https://github.com/python/mypy/issues/19860#issuecomment-3297377452
+from typing import TypeVar, Any, overload
+
+T = TypeVar("T")
+X = TypeVar("X")
+Y = TypeVar("Y")
+
+@overload
+def broadcast(x: X, y: Y, /) -> tuple[X, Y]: ...
+@overload
+def broadcast(*args: T) -> tuple[T, ...]: ...
+def broadcast(*args: object) -> tuple[object, ...]:
+    return args
+
+def test(x: int, y: Any) -> None:
+    a, b = broadcast(x, y)
+    # TODO: can we improve inference and get "int" for the first reveal_type?
+    reveal_type(a)  # N: Revealed type is "Any"
+    reveal_type(b)  # N: Revealed type is "Any"
+[builtins fixtures/tuple.pyi]
+
+[case testOverloadWithOverlappingItemsAndAnyArgument18]
+# https://github.com/python/mypy/issues/19860#issuecomment-3297377452
+# Same as testOverloadWithOverlappingItemsAndAnyArgument17 but with a
+# subclass of tuple[T, ...]
+from typing import TypeVar, Any, overload
+
+T = TypeVar("T")
+X = TypeVar("X")
+Y = TypeVar("Y")
+
+class MyTuple(tuple[T, ...]): ...
+
+@overload
+def broadcast(x: X, y: Y, /) -> tuple[X, Y]: ...
+@overload
+def broadcast(*args: T) -> MyTuple[T]: ...
+def broadcast(*args: object) -> tuple[object, ...]:
+    return args
+
+def test(x: int, y: Any) -> None:
+    a, b = broadcast(x, y)
+    # TODO: can we do better and get rid of these errors?
+    reveal_type(a)  # E: Cannot determine type of "a" \
+                    # N: Revealed type is "Any"
+    reveal_type(b)  # E: Cannot determine type of "b" \
+                    # N: Revealed type is "Any"
+[builtins fixtures/tuple.pyi]
+
+
+
 [case testOverloadOnOverloadWithType]
 from typing import Any, Type, TypeVar, overload
 from mod import MyInt

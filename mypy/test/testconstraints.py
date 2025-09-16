@@ -4,7 +4,7 @@ from mypy.constraints import SUBTYPE_OF, SUPERTYPE_OF, Constraint, infer_constra
 from mypy.test.helpers import Suite
 from mypy.test.typefixture import TypeFixture
 from mypy.typeops import make_simplified_union
-from mypy.types import Instance, TupleType, UnpackType
+from mypy.types import Instance, TupleType, UnionType, UnpackType
 
 
 class ConstraintsSuite(Suite):
@@ -62,23 +62,79 @@ class ConstraintsSuite(Suite):
             Constraint(type_var=fx.s, op=SUPERTYPE_OF, target=fx.d),
         }
 
+    def test_wrapped_tuple_identical_results(self) -> None:
+        # test inferred constraints of tuple[T, ...] <: tuple[B, C]
+        # vs inferred constraints of tuple[*tuple[T, ...]] <: tuple[B, C]
+        fx = self.fx
+        t = Instance(fx.std_tuplei, [fx.t])
+
+        # check subtype constraints
+        assert (
+            set(
+                infer_constraints(
+                    t, TupleType([self.fx.b, self.fx.c], fallback=self.fx.std_tuple), SUBTYPE_OF
+                )
+            )
+            == set(
+                infer_constraints(
+                    TupleType([UnpackType(t)], fallback=self.fx.std_tuple),
+                    TupleType([self.fx.b, self.fx.c], fallback=self.fx.std_tuple),
+                    SUBTYPE_OF,
+                )
+            )
+            == {Constraint(type_var=fx.t, op=SUBTYPE_OF, target=UnionType([fx.b, fx.c]))}
+        )
+
+        # check supertype constraints
+        assert (
+            set(
+                infer_constraints(
+                    t, TupleType([self.fx.b, self.fx.c], fallback=self.fx.std_tuple), SUPERTYPE_OF
+                )
+            )
+            == set(
+                infer_constraints(
+                    TupleType([UnpackType(t)], fallback=self.fx.std_tuple),
+                    TupleType([self.fx.b, self.fx.c], fallback=self.fx.std_tuple),
+                    SUPERTYPE_OF,
+                )
+            )
+            == {
+                # TODO: replace with Intersection[B, C] once supported
+                Constraint(type_var=fx.t, op=SUPERTYPE_OF, target=fx.b),
+                Constraint(type_var=fx.t, op=SUPERTYPE_OF, target=fx.c),
+            }
+        )
+
     def test_unpack_homogeneous_tuple(self) -> None:
         fx = self.fx
+        # class GV[*Ts]
+        # template: GV[*tuple[T, ...]]
+        # actual: GV[A, B]
+        # So, T :> A and T :> B
         assert set(
             infer_constraints(
                 Instance(fx.gvi, [UnpackType(Instance(fx.std_tuplei, [fx.t]))]),
-                Instance(fx.gvi, [fx.a, fx.b]),
+                Instance(fx.gvi, [fx.b, fx.c]),
                 SUPERTYPE_OF,
             )
         ) == {
-            Constraint(type_var=fx.t, op=SUPERTYPE_OF, target=fx.a),
-            Constraint(type_var=fx.t, op=SUBTYPE_OF, target=fx.a),
+            # TODO: replace with Intersection[B, C] once supported
             Constraint(type_var=fx.t, op=SUPERTYPE_OF, target=fx.b),
-            Constraint(type_var=fx.t, op=SUBTYPE_OF, target=fx.b),
+            Constraint(type_var=fx.t, op=SUPERTYPE_OF, target=fx.c),
+            # NOTE: TVTs are currently invariant, so we also get subtype constraints.
+            Constraint(type_var=fx.t, op=SUBTYPE_OF, target=UnionType([fx.b, fx.c])),
         }
 
     def test_unpack_homogeneous_tuple_with_prefix_and_suffix(self) -> None:
         fx = self.fx
+        # class GV2[T, *Ts, S]
+        # classes A, B, C, D with A :> B and A :> C
+        # template: GV2[T, *tuple[S, ...], U]
+        # actual: GV2[A, B, C, D];
+        # prefix matching implies T :> A
+        # suffix matching implies U :> D
+        # unpack matching implies S :> B and S :> C and S <: B and S <: C
         assert set(
             infer_constraints(
                 Instance(fx.gv2i, [fx.t, UnpackType(Instance(fx.std_tuplei, [fx.s])), fx.u]),
@@ -87,11 +143,12 @@ class ConstraintsSuite(Suite):
             )
         ) == {
             Constraint(type_var=fx.t, op=SUPERTYPE_OF, target=fx.a),
-            Constraint(type_var=fx.s, op=SUPERTYPE_OF, target=fx.b),
-            Constraint(type_var=fx.s, op=SUBTYPE_OF, target=fx.b),
-            Constraint(type_var=fx.s, op=SUPERTYPE_OF, target=fx.c),
-            Constraint(type_var=fx.s, op=SUBTYPE_OF, target=fx.c),
             Constraint(type_var=fx.u, op=SUPERTYPE_OF, target=fx.d),
+            # TODO: replace with Intersection[B, C] once supported
+            Constraint(type_var=fx.s, op=SUPERTYPE_OF, target=fx.b),
+            Constraint(type_var=fx.s, op=SUPERTYPE_OF, target=fx.c),
+            # NOTE: TVTs are currently invariant, so we also get subtype constraints.
+            Constraint(type_var=fx.s, op=SUBTYPE_OF, target=UnionType([fx.b, fx.c])),
         }
 
     def test_unpack_with_prefix_and_suffix(self) -> None:

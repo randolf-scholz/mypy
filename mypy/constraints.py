@@ -991,27 +991,19 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
                 return res
         if res:
             return res
-        del res
+        del res  # unscope as not used below.
 
         if isinstance(actual, AnyType):
             return self.infer_against_any(template.args, actual)
         if (
             isinstance(actual, TupleType)
             and is_named_instance(template, TUPLE_LIKE_INSTANCE_NAMES)
-            # and self.direction == SUPERTYPE_OF
+            and self.direction == SUPERTYPE_OF
         ):
             # infer constraints for (template=tuple[T, ...]) :> (actual=tuple[T1, ..., Tn])
-            # Note: tuple[T, ...] :> tuple[()] does not imply any constraints on T
+            # that is T :> T1 and T :> T2, ..., T :> Tn
+            # Note: We do not infer any constraints for tuple[T, ...] :> tuple[()]
             generic_type = template.args[0]
-
-            # if not actual.proper_items:
-            #     # special case: tuple[T, ...] :> tuple[()]
-            #     #
-            #     return [
-            #         Constraint(generic_type, SUBTYPE_OF, UninhabitedType()),
-            #         Constraint(generic_type, SUPERTYPE_OF, UninhabitedType()),
-            #     ]
-
             constraints: list[Constraint] = []
             for item in actual.flattened_items:
                 if isinstance(item, UnpackType):
@@ -1019,7 +1011,7 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
                     if isinstance(unpacked, TypeVarTupleType):
                         # tuple[T, ...] :> tuple[*Ts] implies T :> Union[*Ts]
                         # Since Union[*Ts] is currently not available, use Any instead.
-                        item = AnyType(TypeOfAny.from_omitted_generics)
+                        item = AnyType(TypeOfAny.implementation_artifact)
                     elif (
                         isinstance(unpacked, Instance)
                         and unpacked.type.fullname == "builtins.tuple"
@@ -1030,8 +1022,8 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
                 constraints += infer_constraints(generic_type, item, self.direction)
             return constraints
         elif isinstance(actual, TupleType):
-            # NOTE: tuple[T, ...] <: tuple[A, B, C] has no proper solution but we still infer T <: A, T <: B, T <: C
-            #   depending on context tuple[T, ...] may be treated as AnyOf[(), (T,), (T, T), ...]
+            # NOTE: tuple[T, ...] <: tuple[A, B, C] has no proper solution,
+            #  but we still infer T <: A | B | C
             return infer_constraints(template, mypy.typeops.tuple_fallback(actual), self.direction)
         elif isinstance(actual, TypeVarType):
             if not actual.values and not actual.id.is_meta_var():
@@ -1042,15 +1034,12 @@ class ConstraintBuilderVisitor(TypeVisitor[list[Constraint]]):
         elif isinstance(actual, TypeVarTupleType):
             if template.type.fullname == "builtins.tuple":
                 # infer constraints for tuple[T, ...] vs Ts
-                # tuple[T, ...] :> Ts   =>   T :> Union[*Ts] ≈ Any
-                # tuple[T, ...] <: Ts   =>   T <: Intersection[*Ts] ≈ Any
-                generic_type = template.args[0]
-                assert isinstance(generic_type, TypeVarType)
-                return [
-                    Constraint(
-                        generic_type, self.direction, AnyType(TypeOfAny.from_omitted_generics)
-                    )
-                ]
+                # tuple[T, ...] :> Ts   =>   T :> Union[*Ts]
+                # tuple[T, ...] <: Ts   =>   T <: Intersection[*Ts]
+                # Since neither of these are currently supported, we use Any as a fallback.
+                return infer_constraints(
+                    template.args[0], AnyType(TypeOfAny.implementation_artifact), self.direction
+                )
             raise NotImplementedError
         else:
             return []

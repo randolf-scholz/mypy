@@ -147,16 +147,16 @@ def infer_constraints_for_callable(
         # 1. expand all the actual types.
         parsed_actuals = [
             ParsedActual(
-                id=actual,
-                type=arg_types[actual],
-                kind=arg_kinds[actual],
-                name=arg_names[actual],
+                id=a,
+                type=actual_type,
+                kind=arg_kinds[a],
+                name=arg_names[a],
                 expanded=mapper.expand_actual_type(
-                    arg_types[actual], arg_kinds[actual], formal_name, formal_kind
+                    actual_type, arg_kinds[a], formal_name, formal_kind
                 ),
             )
-            for actual in actuals
-            if arg_types[actual] is not None
+            for a in actuals
+            if (actual_type := arg_types[a]) is not None
         ]
 
         # 2. depending on the formal kind, we can infer constraints.

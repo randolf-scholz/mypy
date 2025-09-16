@@ -203,6 +203,33 @@ class ArgTypeExpander:
             parsed = UnpackType(self.context.make_tuple_instance_type(p_t))
             return TupleType([parsed], fallback=self.context.fallback_tuple)
 
+    @staticmethod
+    def unparse_star_parameter(t: Type, /) -> Type:
+        r"""Reverse normalizations done by parse_star_parameter.
+
+        tuple[*tuple[T, ...]]  -> T
+        tuple[A, B]            -> *tuple[A, B]
+        tuple[*Ts]             -> *Ts
+        tuple[*P.args]         -> P.args
+        """
+        p_t = get_proper_type(t)
+        assert isinstance(p_t, TupleType), f"Expected a parsed star argument, got {t}"
+        simplified_type = p_t.simplify()
+        proper_simplified = get_proper_type(simplified_type)
+
+        # convert tuple[T, ...] to plain T.
+        if isinstance(proper_simplified, Instance):
+            assert proper_simplified.type.fullname == "builtins.tuple"
+            return proper_simplified.args[0]
+        # wrap tuple and Ts in UnpackType
+        elif isinstance(proper_simplified, (TupleType, TypeVarTupleType)):
+            return UnpackType(simplified_type)
+        # return ParamSpec as is.
+        elif isinstance(proper_simplified, ParamSpecType):
+            return simplified_type
+        else:
+            assert False, f"Unexpected unpack content {simplified_type!r}"
+
     def expand_actual_type(
         self,
         actual_type: Type,
@@ -226,13 +253,10 @@ class ArgTypeExpander:
         This is supposed to be called for each formal, in order. Call multiple times per
         formal if multiple actuals map to a formal.
         """
-        proper_actual = get_proper_type(actual_type)
+        original_actual = actual_type
+        actual_type = get_proper_type(actual_type)
 
-        if actual_kind == ARG_POS:
-            assert formal_kind in (ARG_POS, ARG_OPT, ARG_STAR)
-            return actual_type
-
-        elif actual_kind == ARG_STAR:
+        if actual_kind == ARG_STAR:
             assert formal_kind in (ARG_POS, ARG_OPT, ARG_STAR)
             # parse *args into a TupleType.
             tuple_helper = TupleHelper(self.context.tuple_typeinfo)
@@ -281,62 +305,33 @@ class ArgTypeExpander:
             else:
                 raise AssertionError(f"Unexpected formal kind {formal_kind} for *args")
 
-        elif actual_kind == ARG_NAMED:
-            return actual_type
-
         elif actual_kind == nodes.ARG_STAR2:
             from mypy.subtypes import is_subtype
 
-            if isinstance(proper_actual, TypedDictType):
+            if isinstance(actual_type, TypedDictType):
                 if self.kwargs_used is None:
                     self.kwargs_used = set()
-                if formal_kind != nodes.ARG_STAR2 and formal_name in proper_actual.items:
+                if formal_kind != nodes.ARG_STAR2 and formal_name in actual_type.items:
                     # Lookup type based on keyword argument name.
                     assert formal_name is not None
                 else:
                     # Pick an arbitrary item if no specified keyword is expected.
-                    formal_name = (set(proper_actual.items.keys()) - self.kwargs_used).pop()
+                    formal_name = (set(actual_type.items.keys()) - self.kwargs_used).pop()
                 self.kwargs_used.add(formal_name)
-                return proper_actual.items[formal_name]
-            elif isinstance(proper_actual, Instance) and is_subtype(
-                proper_actual, self.context.mapping_type
+                return actual_type.items[formal_name]
+            elif isinstance(actual_type, Instance) and is_subtype(
+                actual_type, self.context.mapping_type
             ):
                 # Only `Mapping` type can be unpacked with `**`.
                 # Other types will produce an error somewhere else.
-                return map_instance_to_supertype(
-                    proper_actual, self.context.mapping_type.type
-                ).args[1]
-            elif isinstance(proper_actual, ParamSpecType):
+                return map_instance_to_supertype(actual_type, self.context.mapping_type.type).args[
+                    1
+                ]
+            elif isinstance(actual_type, ParamSpecType):
                 # ParamSpec is valid in **kwargs but it can't be unpacked.
-                return proper_actual
+                return actual_type
             else:
                 return AnyType(TypeOfAny.from_error)
         else:
-            assert False, f"unexpected actual kind {actual_kind}"
-
-
-def unparse_star_parameter(t: Type) -> Type:
-    r"""Reverse normalizations done by parse_star_parameter.
-
-    tuple[*tuple[T, ...]]  -> T
-    tuple[A, B]            -> *tuple[A, B]
-    tuple[*Ts]             -> *Ts
-    tuple[*P.args]         -> P.args
-    """
-    p_t = get_proper_type(t)
-    assert isinstance(p_t, TupleType), f"Expected a parsed star argument, got {t}"
-    simplified_type = p_t.simplify()
-    proper_simplified = get_proper_type(simplified_type)
-
-    # convert tuple[T, ...] to plain T.
-    if isinstance(proper_simplified, Instance):
-        assert proper_simplified.type.fullname == "builtins.tuple"
-        return proper_simplified.args[0]
-    # wrap tuple and Ts in UnpackType
-    elif isinstance(proper_simplified, (TupleType, TypeVarTupleType)):
-        return UnpackType(simplified_type)
-    # return ParamSpec as is.
-    elif isinstance(proper_simplified, ParamSpecType):
-        return simplified_type
-    else:
-        assert False, f"Unexpected unpack content {simplified_type!r}"
+            # No translation for other kinds -- 1:1 mapping.
+            return original_actual

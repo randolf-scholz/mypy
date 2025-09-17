@@ -2739,3 +2739,17 @@ x + T  # E: Unsupported left operand type for + ("int")
 T()  # E: "TypeVar" not callable
 [builtins fixtures/tuple.pyi]
 [typing fixtures/typing-full.pyi]
+
+
+[case testDictExpressionInCallExpression]
+# This checks that the Mapping Key TypeVar gets correctly resolved.
+from typing import Iterable, Mapping, TypeVar, Union
+
+K = TypeVar("K")
+
+def f(objs: Union[Iterable[int], Mapping[K, int]]) -> K: ...
+
+r = f({"a": 1})
+reveal_type(r)  # N: Revealed type is "builtins.str"
+
+[builtins fixtures/dict.pyi]

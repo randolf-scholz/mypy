@@ -1692,6 +1692,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
 
         See the docstring of check_call for more information.
         """
+        self.expr_cache.clear()  # FOR DEBUGGING
         # Always unpack **kwargs before checking a call.
         callee = callee.with_unpacked_kwargs().with_normalized_var_args()
         if callable_name is None and callee.name:

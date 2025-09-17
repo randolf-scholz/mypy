@@ -62,6 +62,7 @@ from mypy.types import (
     TypedDictType,
     TypeOfAny,
     TypeType,
+    TypeVarId,
     TypeVarLikeType,
     TypeVarTupleType,
     TypeVarType,
@@ -2177,30 +2178,36 @@ def all_non_object_members(info: TypeInfo) -> set[str]:
     return members
 
 
-def infer_variance_in_expr(t: Type, tvar: TypeVarLikeType) -> int:
+def infer_variance_in_expr(type_form: Type, tvar: TypeVarLikeType) -> int:
     r"""Infer the variance of the ith type variable in a type expression.
 
-    Assume we have a constraint like `T <: TypeForm[S]`.
-    Assume `S` is bounded by `L <: S <: U`.
+    Assume we have a type expression `TypeForm[T1, ..., Tn]` with type variables T1, ..., Tn.
 
     Then this method returns:
 
-    1. COVARIANT, if `T <: TypeForm[U]` implies `T <: TypeForm[S]`, i.e. `TypeForm[S] <: TypeForm[U]`
-    2. CONTRAVARIANT, if `T <: TypeForm[L]` implies `T <: TypeForm[S]`
+    1. COVARIANT,     if X <: T1 implies TypeForm[X, T2, ..., Tn] <: TypeForm[T1, T2, ..., Tn]
+    2. CONTRAVARIANT, if X <: T1 implies TypeForm[X, T2, ..., Tn] :> TypeForm[T1, T2, ..., Tn]
     3. INVARIANT, if neither of the above holds
     """
-    # 1 get the upper bound
-    upper = tvar.upper_bound
-    lower = UninhabitedType()
-
     # 0. If the type variable does not appear in the type expression, return INVARIANT.
-    if tvar not in get_all_type_vars(t):
+    if tvar not in get_all_type_vars(type_form):
         return INVARIANT
-    # 1. test covariance:
-    if is_subtype(t, expand_type(t, {tvar.id: upper})):
+
+    fresh_var = TypeVarType(
+        "X",
+        "X",
+        id=TypeVarId(-2),
+        values=[],
+        # Use other TypeVar as the upper bound
+        # This is not officially supported, but does seem to work?
+        upper_bound=tvar,
+        default=AnyType(TypeOfAny.from_omitted_generics),
+    )
+    new_form = expand_type(type_form, {tvar.id: fresh_var})
+
+    if is_subtype(new_form, type_form):
         return COVARIANT
-    # 2. test contravariance:
-    if is_subtype(expand_type(t, {tvar.id: lower}), t):
+    if is_subtype(type_form, new_form):
         return CONTRAVARIANT
     return INVARIANT
 

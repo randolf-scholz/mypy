@@ -3507,7 +3507,6 @@ x4: tuple[object] = id_(id_(id_(id_((1,)))))
 from typing import TypeVar
 from collections.abc import Set as MutableSequence
 
-
 T = TypeVar("T")
 def id_(x: MutableSequence[T]) -> tuple[T]: ...
 

@@ -2753,3 +2753,22 @@ r = f({"a": 1})
 reveal_type(r)  # N: Revealed type is "builtins.str"
 
 [builtins fixtures/dict.pyi]
+
+
+[case testDictExpressionInCallExpression2]
+# This checks that outer constraints are correctly propagated to the inner expression.
+from typing import Mapping, TypeVar
+
+T = TypeVar("T")
+
+def identity(arg: T) -> T: ...
+
+x: Mapping[str, str] = identity({})
+reveal_type(x)  # N: Revealed type is "typing.Mapping[builtins.str, builtins.str]"
+
+# dict[str, str] is a subtype of Mapping[str, str], so mypy uses the more specific type.
+y: Mapping[str, str]
+y = identity({})
+reveal_type(y)  # N: Revealed type is "builtins.dict[builtins.str, builtins.str]"
+
+[builtins fixtures/dict.pyi]

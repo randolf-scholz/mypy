@@ -42,7 +42,7 @@ from mypy.expandtype import (
 from mypy.infer import ArgumentInferContext, infer_function_type_arguments
 from mypy.literals import literal
 from mypy.maptype import map_instance_to_supertype
-from mypy.meet import is_overlapping_types, narrow_declared_type
+from mypy.meet import is_overlapping_types, meet_types, narrow_declared_type
 from mypy.message_registry import ErrorMessage
 from mypy.messages import MessageBuilder, format_type
 from mypy.nodes import (
@@ -1692,7 +1692,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
 
         See the docstring of check_call for more information.
         """
-        self.expr_cache.clear()  # FOR DEBUGGING
+        # self.expr_cache.clear()  # FOR DEBUGGING
         # Always unpack **kwargs before checking a call.
         callee = callee.with_unpacked_kwargs().with_normalized_var_args()
         if callable_name is None and callee.name:
@@ -2087,6 +2087,11 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
             object_type = self.named_type("builtins.object")
             ctx = proper_ctx
             tvars = get_all_type_vars(ctx)
+
+            # concatenate self.constraint_context, which is a list of lists
+            all_constraints = [c for cl in self.constraint_context for c in cl]
+            upper_bounds = get_upper_bounds(tvars, all_constraints)
+
             for tvar in tvars:
                 if not tvar.id.is_meta_var():
                     continue
@@ -2096,11 +2101,12 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                     if variance == COVARIANT:
                         # If the upper bound is just object, erase it instead.
                         # otherwise the solver may infer too general type
-                        if is_same_type(tvar.upper_bound, object_type):
+                        contextual_upper_bound = upper_bounds[tvar.id]
+                        if is_same_type(contextual_upper_bound, object_type):
                             ctx = replace_typevar(ctx, tvar.id, ErasedType())
                         else:
                             # proper_ctx = expand_type(proper_ctx, {tvar.id: tvar.upper_bound})
-                            ctx = replace_typevar(ctx, tvar.id, tvar.upper_bound)
+                            ctx = replace_typevar(ctx, tvar.id, contextual_upper_bound)
                     elif variance == CONTRAVARIANT:
                         # proper_ctx = expand_type(proper_ctx, {tvar.id: UninhabitedType()})
                         ctx = replace_typevar(ctx, tvar.id, UninhabitedType())
@@ -6275,6 +6281,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
         is True and this expression is a call, allow it to return None.  This
         applies only to this expression and not any subexpressions.
         """
+        # self.expr_cache.clear()  # debugging
         if node in self.type_overrides:
             # This branch is very fast, there is no point timing it.
             return self.type_overrides[node]
@@ -7116,6 +7123,25 @@ def get_upper_and_lower(
     return upper, lower
 
 
-def _show(*args, **kwargs) -> None:
+def _show(*args: object) -> None:
     if SHOW:
-        print(*args, **kwargs)
+        print(*args)
+
+
+def get_upper_bounds(
+    tvars: Sequence[TypeVarLikeType], constraints: Sequence[Constraint]
+) -> dict[TypeVarId, Type]:
+    # for each tvar, find all upper constraints on it.
+    # then, update the upper bound of the tvar to be the intersection of
+    # the upper bounds.
+    upper_bounds: dict[TypeVarId, Type] = {}
+    for tvar in tvars:
+        relevant_constraints = [
+            c for c in constraints if c.type_var == tvar.id and c.op == SUBTYPE_OF
+        ]
+        top = tvar.upper_bound
+        for c in relevant_constraints:
+            top = meet_types(top, c.target)
+
+        upper_bounds[tvar.id] = top
+    return upper_bounds

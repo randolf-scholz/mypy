@@ -2759,16 +2759,46 @@ reveal_type(r)  # N: Revealed type is "builtins.str"
 # This checks that outer constraints are correctly propagated to the inner expression.
 from typing import Mapping, TypeVar
 
-T = TypeVar("T")
+T1 = TypeVar("T1")
+T2 = TypeVar("T2")
+T3 = TypeVar("T3")
 
-def identity(arg: T) -> T: ...
+def identity1(arg: T1, /) -> T1: ...
+def identity2(arg: T2, /) -> T2: ...
+def identity3(arg: T3, /) -> T3: ...
 
-x: Mapping[str, str] = identity({})
-reveal_type(x)  # N: Revealed type is "typing.Mapping[builtins.str, builtins.str]"
+# test with multiple layers of identity functions
+x1: Mapping[str, str] = identity1({})
+reveal_type(x1)  # N: Revealed type is "typing.Mapping[builtins.str, builtins.str]"
+x2: Mapping[str, str] = identity2(identity1({}))
+reveal_type(x2)  # N: Revealed type is "typing.Mapping[builtins.str, builtins.str]"
+x3: Mapping[str, str] = identity3(identity2(identity1({})))
+reveal_type(x3)  # N: Revealed type is "typing.Mapping[builtins.str, builtins.str]"
 
 # dict[str, str] is a subtype of Mapping[str, str], so mypy uses the more specific type.
-y: Mapping[str, str]
-y = identity({})
-reveal_type(y)  # N: Revealed type is "builtins.dict[builtins.str, builtins.str]"
-
+y1: Mapping[str, str]
+y1 = identity1({})
+reveal_type(y1)  # N: Revealed type is "builtins.dict[builtins.str, builtins.str]"
+y2: Mapping[str, str]
+y2 = identity2(identity1({}))
+reveal_type(y2)  # N: Revealed type is "builtins.dict[builtins.str, builtins.str]"
+y3: Mapping[str, str]
+y3 = identity3(identity2(identity1({})))
+reveal_type(y3)  # N: Revealed type is "builtins.dict[builtins.str, builtins.str]"
 [builtins fixtures/dict.pyi]
+
+
+[case testCallExpressionSecondArgumentSolvesTypeVar]
+# This checks a case where the first argument in the inner expression does not solve the TypeVar,
+# but the second or third argument does.
+from typing import Iterable, TypeVar
+
+V = TypeVar("V")
+
+def f(x0: Iterable[V], x1: Iterable[V], x2: Iterable[V]) -> list[V]: ...
+
+reveal_type( f([], [], []) )   # N: Revealed type is "builtins.list[Never]"
+reveal_type( f([], [], [1]) )  # N: Revealed type is "builtins.list[builtins.int]"
+reveal_type( f([], [1], []) )  # N: Revealed type is "builtins.list[builtins.int]"
+reveal_type( f([1], [], []) )  # N: Revealed type is "builtins.list[builtins.int]"
+[builtins fixtures/list.pyi]

@@ -461,59 +461,53 @@ reveal_type( identity_on_iterable(y + x) )  # N: Revealed type is "typing.Iterab
 reveal_type( identity_on_iterable(x + y) )  # N: Revealed type is "typing.Iterable[Union[builtins.str, None]]"
 
 
-[case testBinaryOperatorContextUnionToObject]
-# flags: --python-version 3.12
-from typing import Any
+[case testBinaryOperatorContextIllegalAssignment]
+from typing import Any, TypeVar, Union, Generic
 
-class Vec[T]:
+T = TypeVar("T")
+S = TypeVar("S")
+U = TypeVar("U")
+
+class Vec(Generic[T]):  # invariant in T.
     def get(self) -> T: ...
     def set(self, arg: T) -> None: ...
-    def __add__[S](self, other: "Vec[S]") -> "Vec[T | S]": ...
+    def __add__(self, other: "Vec[S]") -> "Vec[Union[T, S]]": ...
 
-def id_[T](x: Vec[T]) -> Vec[T]: ...
+def id_(x: Vec[U]) -> Vec[U]: ...
 
 def test(a: Vec[int], b: Vec[str]) -> None:
-    y1: Vec[object] = a + b  # E: Incompatible types in assignment (expression has type "Vec[Union[int, str]]", variable has type "Vec[object]")
-    y2: Vec[object] = b + a  # E: Incompatible types in assignment (expression has type "Vec[Union[str, int]]", variable has type "Vec[object]")
-    y3: Vec[object] = id_(a + b)  # E: Incompatible types in assignment (expression has type "Vec[Union[int, str]]", variable has type "Vec[object]")
-    y4: Vec[object] = id_(b + a)  # E: Incompatible types in assignment (expression has type "Vec[Union[str, int]]", variable has type "Vec[object]")
+    y1: Vec[object] = a + b            # E: Incompatible types in assignment (expression has type "Vec[Union[int, str]]", variable has type "Vec[object]")
+    y2: Vec[object] = b + a            # E: Incompatible types in assignment (expression has type "Vec[Union[str, int]]", variable has type "Vec[object]")
+    y3: Vec[object] = id_(a + b)       # E: Incompatible types in assignment (expression has type "Vec[Union[int, str]]", variable has type "Vec[object]")
+    y4: Vec[object] = id_(b + a)       # E: Incompatible types in assignment (expression has type "Vec[Union[str, int]]", variable has type "Vec[object]")
     y5: Vec[object] = id_(id_(a + b))  # E: Incompatible types in assignment (expression has type "Vec[Union[int, str]]", variable has type "Vec[object]")
     y6: Vec[object] = id_(id_(b + a))  # E: Incompatible types in assignment (expression has type "Vec[Union[str, int]]", variable has type "Vec[object]")
 
 
-[case testBinaryOperatorContextAnyToUnion]
-# flags: --python-version 3.12
-from typing import Any
+[case testBinaryOperatorContextWithAny]
+from typing import Any, TypeVar, Union, Generic
 
-class Vec[T]:
+T = TypeVar("T")
+S = TypeVar("S")
+U = TypeVar("U")
+
+class Vec(Generic[T]):  # invariant in T.
     def get(self) -> T: ...
     def set(self, arg: T) -> None: ...
-    def __add__[S](self, other: "Vec[S]") -> "Vec[T | S]": ...
+    def __add__(self, other: "Vec[S]") -> "Vec[Union[T | S]]": ...
 
-def id_[T](x: Vec[T]) -> Vec[T]: ...
+def id_(x: Vec[U]) -> Vec[U]: ...
 
-def test(a: Vec[int], c: Vec[Any]) -> None:
+def test_any_to_union(a: Vec[int], c: Vec[Any]) -> None:
     # OK: Vec[Any | int] = Vec[str | int] for materialization Any=str
-    w1: Vec[str | int] = a + c
-    w2: Vec[str | int] = c + a
-    w3: Vec[str | int] = id_(a + c)
-    w4: Vec[str | int] = id_(c + a)
-    w5: Vec[str | int] = id_(id_(a + c))
-    w6: Vec[str | int] = id_(id_(c + a))
+    w1: Vec[Union[str, int]] = a + c
+    w2: Vec[Union[str, int]] = c + a
+    w3: Vec[Union[str, int]] = id_(a + c)
+    w4: Vec[Union[str, int]] = id_(c + a)
+    w5: Vec[Union[str, int]] = id_(id_(a + c))
+    w6: Vec[Union[str, int]] = id_(id_(c + a))
 
-
-[case testBinaryOperatorContextAnyToObject]
-# flags: --python-version 3.12
-from typing import Any
-
-class Vec[T]:
-    def get(self) -> T: ...
-    def set(self, arg: T) -> None: ...
-    def __add__[S](self, other: "Vec[S]") -> "Vec[T | S]": ...
-
-def id_[T](x: Vec[T]) -> Vec[T]: ...
-
-def test(a: Vec[int], c: Vec[Any]) -> None:
+def test_any_to_object(a: Vec[int], c: Vec[Any]) -> None:
     # OK: Vec[Any | int] = Vec[object | int] = Vec[object] for materialization Any=object
     w1: Vec[object] = a + c
     w2: Vec[object] = c + a
@@ -522,38 +516,43 @@ def test(a: Vec[int], c: Vec[Any]) -> None:
     w5: Vec[object] = id_(id_(a + c))
     w6: Vec[object] = id_(id_(c + a))
 
-[case testBinaryOperatorContext11]
-# flags: --python-version 3.12
-from typing import Any
+[case testBinaryOperatorContextWithAnySubclass]
+from typing import Any, Generic, TypeVar, Union
 
-class A[R]:
+T = TypeVar("T")
+S = TypeVar("S")
+R = TypeVar("R", covariant=True)
+
+class A(Generic[R]):
     # covariant parent class
+
     def getter(self) -> R: ...
 
-class B[T](A[T]):
+class B(A[T], Generic[T]):
     # invariant child class
+
     def getter(self) -> T: ...
     def setter(self, arg: T) -> None: ...
-    def __add__[S](self, x: "B[S]") -> "B[T | S]": ...
+    def __add__(self, x: "B[S]") -> "B[Union[T, S]]": ...
 
-def test_any(b1: B[Any], b2: B[int], b3: B[Any | int]) -> None:
+def test_any(b1: B[Any], b2: B[int], b3: B[Union[Any, int]]) -> None:
     a1: A[object] = b1 + b2
     a2: A[object] = b2 + b1
     a3: A[object] = b3
 
-def test_object(b1: B[object], b2: B[int], b3: B[Any | int]) -> None:
+def test_object(b1: B[object], b2: B[int], b3: B[Union[Any, int]]) -> None:
     a1: A[object] = b1 + b2
     a2: A[object] = b2 + b1
     a3: A[object] = b3
 
-def test_any2(b1: B[Any], b2: B[int], b3: B[Any | int]) -> None:
+def test_any2(b1: B[Any], b2: B[int], b3: B[Union[Any, int]]) -> None:
     # B[Any | int] = B[object] for materialization Any=object
     # therefore assignable
     a1: B[object] = b1 + b2
     a2: B[object] = b2 + b1
     a3: B[object] = b3
 
-def test_object2(b1: B[object], b2: B[int], b3: B[Any | int]) -> None:
+def test_object2(b1: B[object], b2: B[int], b3: B[Union[Any, int]]) -> None:
     a1: B[object] = b1 + b2
     a2: B[object] = b2 + b1
     a3: B[object] = b3

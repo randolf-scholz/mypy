@@ -54,6 +54,7 @@ from mypy.nodes import (
     CONTRAVARIANT,
     COVARIANT,
     IMPLICITLY_ABSTRACT,
+    INVARIANT,
     LAMBDA_NAME,
     LITERAL_TYPE,
     REVEAL_LOCALS,
@@ -292,9 +293,9 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
     msg: MessageBuilder
     # Type context for type inference
     type_context: list[Type | None]
+    expr_context: list[Expression]
     # constraints for the type context, used for type inference
     constraint_context: list[list[Constraint]]
-    callee_context: list[CallableType]
 
     # cache resolved types in some cases
     resolved_type: dict[Expression, ProperType]
@@ -322,6 +323,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
         self.in_expression = False
         self.type_context = [None]
         self.constraint_context = [[]]
+        self.expr_context = []
 
         # Temporary overrides for expression types. This is currently
         # used by the union math in overloads.
@@ -1590,6 +1592,15 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                     if overloaded_result is not None:
                         return overloaded_result
 
+            _show(
+                f"\n=== CHECKING ==================="
+                f"\n\tcallee={callee}"
+                f"\n\targs={args} "
+                f"\n\targ_kinds={arg_kinds}"
+                f"\n\ttype_context={self.type_context}"
+                f"\n\tconstraints={self.constraint_context}"
+            )
+
             result = self.check_callable_call(
                 callee,
                 args,
@@ -1602,11 +1613,6 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
             )
             _show(
                 f"\n=== RESULT ==================="
-                f"\n\tcallee={callee}"
-                f"\n\targs={args} "
-                f"\n\targ_kinds={arg_kinds}"
-                f"\n\ttype_context={self.type_context}"
-                f"\n\tconstraints={self.constraint_context}"
                 f"\n\n\tret_type={result[0]}"
                 f"\n\tinferred_callee={result[1]}"
             )
@@ -2053,6 +2059,9 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
             #     variables in an expression are inferred at the same time.
             #     (And this is hard, also we need to be careful with lambdas that require
             #     two passes.)
+        ctx = proper_ctx
+        ctx = update_type_context_using_constraints(ctx, self.constraint_context[-1])
+
         if (
             isinstance(proper_ret, TypeVarType)
             or isinstance(proper_ret, UnionType)
@@ -2084,61 +2093,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
             if not is_generic_instance(ctx) and not is_literal_type_like(ctx):
                 return []
 
-        NEW_CODE: bool = True
-        if NEW_CODE:
-            object_type = self.named_type("builtins.object")
-            ctx = proper_ctx
-            ctx = self.update_type_context_using_constraints(ctx)
-            return infer_constraints(proper_ret, ctx, SUBTYPE_OF)
-        else:
-            erased_ctx = get_proper_type(replace_meta_vars(ctx, ErasedType()))
-            return infer_constraints(proper_ret, erased_ctx, SUBTYPE_OF)
-
-    def update_type_context_using_constraints(self, ctx: Type | None) -> Type | None:
-        object_type = self.named_type("builtins.object")
-        if ctx is None:
-            return None
-
-        tvars = get_all_type_vars(ctx)
-
-        # concatenate self.constraint_context, which is a list of lists
-        all_constraints = [c for cl in self.constraint_context for c in cl]
-        upper_bounds = get_upper_bounds(tvars, all_constraints)
-        lower_bounds = get_lower_bounds(tvars, all_constraints)
-
-        for tvar in tvars:
-            if not tvar.id.is_meta_var():
-                continue
-
-            if isinstance(tvar, TypeVarType):
-                variance = infer_variance_in_expr(ctx, tvar)
-                if variance == COVARIANT:
-                    # If the upper bound is just object, erase it instead.
-                    # otherwise the solver may infer too general type
-                    contextual_upper_bound = upper_bounds[tvar.id]
-                    if is_same_type(contextual_upper_bound, object_type):
-                        pass
-                        ctx = replace_typevar(ctx, tvar.id, ErasedType())
-                    else:
-                        ctx = replace_typevar(ctx, tvar.id, contextual_upper_bound)
-                elif variance == CONTRAVARIANT:
-                    contextual_lower_bound = lower_bounds[tvar.id]
-
-                    ctx = replace_typevar(ctx, tvar.id, contextual_lower_bound)
-
-                    # if is_same_type(contextual_lower_bound, UninhabitedType()):
-                    #     pass
-                    #     ctx = replace_typevar(ctx, tvar.id, ErasedType())
-                    # else:
-                    #     ctx = replace_typevar(ctx, tvar.id, contextual_lower_bound)
-                else:
-                    pass
-                    ctx = replace_typevar(ctx, tvar.id, ErasedType())
-            else:
-                pass
-                ctx = replace_typevar(ctx, tvar.id, ErasedType())
-
-        return ctx
+        return infer_constraints(proper_ret, ctx, SUBTYPE_OF)
 
     def infer_function_type_arguments(
         self,
@@ -2159,11 +2114,23 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
         if self.chk.in_checked_function():
             # compute the outer solution
             outer_constraints = self.infer_constraints_from_context(callee_type, context)
+            minimize = True
+            maximize = False
+            # detect if we are in an outermost call context.
+            # if len(self.type_context) >=2 and self.type_context[-2] is None and self.type_context[-1] is not None:
+            #     minimize = False
+            #     maximize = True
+            # if len(self.type_context) >= 2 and self.type_context[-2] is None and self.type_context[-1] is not None:
+            #     minimize = False
+            #     maximize = True
+
             outer_solution, _ = solve_constraints(
                 callee_type.variables,
                 outer_constraints,  # + self.constraint_context[-1],
                 strict=self.chk.in_checked_function(),
                 allow_polymorphic=False,
+                minimize=minimize,
+                maximize=maximize,
             )
             outer_solution = filter_solution(outer_solution)
             outer_callee = self.apply_generic_arguments(
@@ -2171,20 +2138,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
             )
 
             # compute the trivial constraints
-            # each TVar is a subtype of its upper bound
-            trivial_constraints = [
-                Constraint(t, SUBTYPE_OF, t.upper_bound)
-                for t in callee_type.variables
-                if isinstance(t, TypeVarType)
-            ]
-            # a constrained TVar is a subtype of the union of its values
-            # relevant for `testCallGenericFunctionWithTypeVarValueRestrictionUsingContext`
-            trivial_constraints += [
-                Constraint(t, SUBTYPE_OF, make_simplified_union(t.values))
-                for t in callee_type.variables
-                if isinstance(t, TypeVarType) and t.values
-            ]
-            # trivial_constraints = []
+            trivial_constraints = get_trivial_constraints(callee_type.variables)
 
             # _show(
             #     f"\n=== DEBUG ============================"
@@ -2213,6 +2167,12 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                     # relevant for `testWideOuterContext` unit tests.
                     constraints=outer_constraints + trivial_constraints,
                 )
+            _show(
+                f"\n===== INFERRED ARGS ====="
+                f"\n\t{callee_type.arg_types}"
+                f"\n\tconstraints={outer_constraints + trivial_constraints}"
+                f"\n\t{arg_types=}"
+            )
 
             arg_pass_nums = self.get_arg_infer_passes(
                 callee_type, args, arg_types, formal_to_actual, len(args)
@@ -2251,8 +2211,8 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                 # HACK: convert "Literal?" constraints to their non-literal versions.
                 # relevant for `testLiteral*` tests.
                 inner_constraints = [
-                    Constraint(c.original_type_var, c.op, forget_last_known_value(c.target))
-                    # Constraint(c.original_type_var, c.op, use_last_known_value(c.target))
+                    # Constraint(c.original_type_var, c.op, forget_last_known_value(c.target))
+                    Constraint(c.original_type_var, c.op, c.target)
                     for c in _inner_constraints
                 ]
                 inner_solution, _ = solve_constraints(
@@ -2284,6 +2244,14 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                 joint_callee = self.apply_generic_arguments(
                     callee_type, joint_solution, context, skip_unsatisfied=True
                 )
+
+                # determine if solution was successful:
+                if is_proper_solution(callee_type, joint_solution):
+                    extra_constraints = outer_constraints + inner_constraints + trivial_constraints
+                elif is_proper_solution(callee_type, outer_solution):
+                    extra_constraints = outer_constraints + trivial_constraints
+                else:
+                    extra_constraints = outer_constraints + inner_constraints
 
                 # determine which solution to take
                 use_joint = all(
@@ -2392,7 +2360,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                         minimize=True,
                     )
                     inferred_args = filter_solution(new_inner_solution)
-                    # _show(f"Two stage inference: \n\t{callee_type=}\n\t{inferred_args=}")
+                # _show(f"Two stage inference: \n\t{callee_type=}\n\t{inferred_args=}")
             else:  # END NEW CODE
                 pass
 
@@ -2435,11 +2403,8 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                 elif not first_arg or not is_subtype(self.named_type("builtins.str"), first_arg):
                     self.chk.fail(message_registry.KEYWORD_ARGUMENT_REQUIRES_STR_KEY_TYPE, context)
 
-            if not self.chk.options.old_type_inference and any(
-                a is None
-                or isinstance(get_proper_type(a), UninhabitedType)
-                or set(get_type_vars(a)) & set(callee_type.variables)
-                for a in inferred_args
+            if not self.chk.options.old_type_inference and not is_proper_solution(
+                callee_type, inferred_args
             ):
                 if need_refresh:
                     # Technically we need to refresh formal_to_actual after *each* inference pass,
@@ -2465,6 +2430,8 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
                     context=self.argument_infer_context(),
                     strict=self.chk.in_checked_function(),
                     allow_polymorphic=True,
+                    extra_constraints=extra_constraints,
+                    minimize=True,
                 )
                 poly_callee_type = self.apply_generic_arguments(
                     callee_type, poly_inferred_args, context
@@ -6315,6 +6282,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
         self.constraint_context.append(constraints or [])
         # type_context = self.update_type_context_using_constraints(type_context)
         self.type_context.append(type_context)
+        self.expr_context.append(node)
 
         # fix the type context using the contextual constraints
         if HACKS and type_context is not None:
@@ -6381,6 +6349,7 @@ class ExpressionChecker(ExpressionVisitor[Type], ExpressionCheckerSharedApi):
             )
         self.is_callee = old_is_callee
         self.type_context.pop()
+        self.expr_context.pop()
         self.constraint_context.pop()
         assert typ is not None
         self.chk.store_type(node, typ)
@@ -7151,21 +7120,25 @@ def _show(*args: object) -> None:
 
 
 def get_trivial_constraints(
-    tvars: Sequence[TypeVarLikeType], filter_object: bool = True
+    tvars: Sequence[TypeVarLikeType], /, *, filter_object: bool = True
 ) -> Sequence[Constraint]:
     """Every Type Variable is a subtype of its upper bound."""
     # each TVar is a subtype of its upper bound
     constraints: list[Constraint] = []
     for t in tvars:
         upper_bound = get_proper_type(t.upper_bound)
+
+        # An upper bound of 'object' is not informative, and usually just means no
+        # constraint was specified. We skip these because the solver picks the upper
+        # bound as a solution if there are no lower constraints.
         if (
             filter_object
             and isinstance(upper_bound, Instance)
             and upper_bound.type.fullname == "builtins.object"
         ):
-            # these are usually because no constraint was specified, not because the user gave one.
-            continue
-        constraints.append(Constraint(t, SUBTYPE_OF, upper_bound))
+            pass
+        else:
+            constraints.append(Constraint(t, SUBTYPE_OF, upper_bound))
 
         if isinstance(t, TypeVarType) and t.values:
             constraints.append(Constraint(t, SUBTYPE_OF, make_simplified_union(t.values)))
@@ -7183,10 +7156,6 @@ def get_upper_bounds(
         relevant_constraints = [
             c for c in constraints if c.type_var == tvar.id and c.op == SUBTYPE_OF
         ]
-        # if not relevant_constraints:
-        #     upper_bounds[tvar.id] = None
-        #     continue
-
         top = tvar.upper_bound
         for c in relevant_constraints:
             top = meet_types(top, c.target)
@@ -7212,3 +7181,51 @@ def get_lower_bounds(
             bottom = join_types(bottom, c.target)
         lower_bounds[tvar.id] = bottom
     return lower_bounds
+
+
+def update_type_context_using_constraints(typ: Type, /, constraints: list[Constraint]) -> Type:
+    tvars = get_all_type_vars(typ)
+
+    # concatenate self.constraint_context, which is a list of lists
+    upper_bounds = get_upper_bounds(tvars, constraints)
+    lower_bounds = get_lower_bounds(tvars, constraints)
+
+    for tvar in tvars:
+        if not tvar.id.is_meta_var():
+            continue
+
+        if isinstance(tvar, TypeVarType):
+            variance = infer_variance_in_expr(typ, tvar)
+
+            if variance == INVARIANT:
+                typ = replace_typevar(typ, tvar.id, ErasedType())
+
+            elif variance == COVARIANT:
+                contextual_upper_bound = upper_bounds[tvar.id]
+                typ = replace_typevar(typ, tvar.id, contextual_upper_bound)
+
+            elif variance == CONTRAVARIANT:
+                contextual_lower_bound = lower_bounds[tvar.id]
+                typ = replace_typevar(typ, tvar.id, contextual_lower_bound)
+
+            else:
+                raise ValueError(f"Unexpected variance: {variance}")
+
+        elif isinstance(tvar, TypeVarTupleType):
+            typ = replace_typevar(typ, tvar.id, ErasedType())
+        elif isinstance(tvar, ParamSpecType):
+            typ = replace_typevar(typ, tvar.id, ErasedType())
+        else:
+            # Add other branches if more TypeVarLikeType are added
+            raise TypeError(f"Unexpected type variable type: {tvar}")
+
+    return typ
+
+
+def is_proper_solution(callee_type: CallableType, inferred_args: Sequence[Type | None]) -> bool:
+    return not any(
+        a is None
+        or isinstance(get_proper_type(a), UninhabitedType)
+        or (set(get_type_vars(a)) & set(callee_type.variables))
+        for a in inferred_args
+    )

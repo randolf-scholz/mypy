@@ -158,7 +158,18 @@ def erase_meta_id(id: TypeVarId) -> bool:
     return id.is_meta_var()
 
 
-def replace_meta_vars(t: Type, target_type: Type) -> Type:
+def replace_typevar(t: Type, tvar_id: TypeVarId, replacement: Type) -> Type:
+    """Replace type variable in a type with the target type."""
+
+    def replace_id(id: TypeVarId) -> bool:
+        return id == tvar_id
+
+    return t.accept(TypeVarEraser(replace_id, replacement))
+
+
+def replace_meta_vars(
+    t: Type, target_type: Type, ids_to_replace: Container[TypeVarId] | None = None
+) -> Type:
     """Replace unification variables in a type with the target type."""
     return t.accept(TypeVarEraser(erase_meta_id, target_type))
 
@@ -231,6 +242,26 @@ class TypeVarEraser(TypeTranslator):
         # Type alias target can't contain bound type variables (not bound by the type
         # alias itself), so it is safe to just erase the arguments.
         return t.copy_modified(args=[a.accept(self) for a in t.args])
+
+
+class TypeVarSubstitutor(TypeTranslator):
+    """Substitute a type variable with a given replacement.
+
+    Args:
+        erase_id: A callable that returns True if the type variable should be replaced.
+            If None, all type variables are replaced.
+        replacement: The type to replace the type variable with.
+        covariant_replacement (optional): The type to replace the type variable when it is used in a covariant position.
+        contravariant_replacement (optional): The type to replace the type variable when it is used in a contravariant position.
+
+    Examples:
+        We have an upper bounded type variables `T <: MyType`
+        We know we have a type-var constraint `S <: T`
+        We can create a weaker constraint `S <: MyType` by using the upper bound
+        Likewise, when we have `S <: Callable[[T], R]`, we can create a weaker constraint `S <: Callable[[Never], R]`,
+        by using a lower bound of `T` which is `Never`.
+        So generally, we can use lower bounds for contravariant positions and upper bounds for covariant positions.
+    """
 
 
 def remove_instance_last_known_values(t: Type) -> Type:

@@ -743,6 +743,7 @@ def match_generic_callables(t: CallableType, s: CallableType) -> tuple[CallableT
 
 
 def join_similar_callables(t: CallableType, s: CallableType) -> CallableType:
+    # join(X₁ -> Y₁, X₂ -> Y₂) = meet(X₁, X₂) -> join(Y₁, Y₂)
     t, s = match_generic_callables(t, s)
     arg_types: list[Type] = []
     for i in range(len(t.arg_types)):

@@ -36,6 +36,7 @@ from mypy.nodes import (
 )
 from mypy.options import Options
 from mypy.state import state
+from mypy.typeops import get_all_type_vars
 from mypy.types import (
     MYPYC_NATIVE_INT_NAMES,
     TUPLE_LIKE_INSTANCE_NAMES,
@@ -61,6 +62,8 @@ from mypy.types import (
     TypedDictType,
     TypeOfAny,
     TypeType,
+    TypeVarId,
+    TypeVarLikeType,
     TypeVarTupleType,
     TypeVarType,
     TypeVisitor,
@@ -2173,6 +2176,40 @@ def all_non_object_members(info: TypeInfo) -> set[str]:
     for base in info.mro[1:-1]:
         members.update(base.names)
     return members
+
+
+def infer_variance_in_expr(type_form: Type, tvar: TypeVarLikeType) -> int:
+    r"""Infer the variance of the ith type variable in a type expression.
+
+    Assume we have a type expression `TypeForm[T1, ..., Tn]` with type variables T1, ..., Tn.
+
+    Then this method returns:
+
+    1. COVARIANT,     if X <: T1 implies TypeForm[X, T2, ..., Tn] <: TypeForm[T1, T2, ..., Tn]
+    2. CONTRAVARIANT, if X <: T1 implies TypeForm[X, T2, ..., Tn] :> TypeForm[T1, T2, ..., Tn]
+    3. INVARIANT, if neither of the above holds
+    """
+    # 0. If the type variable does not appear in the type expression, return INVARIANT.
+    if tvar not in get_all_type_vars(type_form):
+        return INVARIANT
+
+    fresh_var = TypeVarType(
+        "X",
+        "X",
+        id=TypeVarId(-2),
+        values=[],
+        # Use other TypeVar as the upper bound
+        # This is not officially supported, but does seem to work?
+        upper_bound=tvar,
+        default=AnyType(TypeOfAny.from_omitted_generics),
+    )
+    new_form = expand_type(type_form, {tvar.id: fresh_var})
+
+    if is_subtype(new_form, type_form):
+        return COVARIANT
+    if is_subtype(type_form, new_form):
+        return CONTRAVARIANT
+    return INVARIANT
 
 
 def infer_variance(info: TypeInfo, i: int) -> bool:

@@ -14,6 +14,7 @@ class function: pass
 class int: pass
 class float: pass
 class str: pass
+class bytes: pass
 class bool(int): pass
 class dict(typing.Generic[T, U]): pass
 class set(typing.Generic[T]): pass

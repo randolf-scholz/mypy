@@ -9,7 +9,7 @@ from typing_extensions import TypeAlias as _TypeAlias
 from mypy.constraints import SUBTYPE_OF, SUPERTYPE_OF, Constraint, infer_constraints, neg_op
 from mypy.expandtype import expand_type
 from mypy.graph_utils import prepare_sccs, strongly_connected_components, topsort
-from mypy.join import join_type_list
+from mypy.join import join_type_list, object_or_any_from_type
 from mypy.meet import meet_type_list, meet_types
 from mypy.subtypes import is_subtype
 from mypy.typeops import get_all_type_vars
@@ -44,6 +44,8 @@ def solve_constraints(
     strict: bool = True,
     allow_polymorphic: bool = False,
     skip_unsatisfied: bool = False,
+    minimize: bool = False,
+    maximize: bool = False,
 ) -> tuple[list[Type | None], list[TypeVarLikeType]]:
     """Solve type constraints.
 
@@ -82,7 +84,7 @@ def solve_constraints(
     if allow_polymorphic:
         if constraints:
             solutions, free_vars = solve_with_dependent(
-                vars + extra_vars, constraints, vars, originals
+                vars + extra_vars, constraints, vars, originals, minimize=minimize
             )
         else:
             solutions = {}
@@ -95,7 +97,7 @@ def solve_constraints(
                 continue
             lowers = [c.target for c in cs if c.op == SUPERTYPE_OF]
             uppers = [c.target for c in cs if c.op == SUBTYPE_OF]
-            solution = solve_one(lowers, uppers)
+            solution = solve_one(lowers, uppers, minimize=minimize, maximize=maximize)
 
             # Do not leak type variables in non-polymorphic solutions.
             if solution is None or not get_vars(
@@ -131,6 +133,7 @@ def solve_with_dependent(
     constraints: list[Constraint],
     original_vars: list[TypeVarId],
     originals: dict[TypeVarId, TypeVarLikeType],
+    minimize: bool = False,
 ) -> tuple[Solutions, list[TypeVarLikeType]]:
     """Solve set of constraints that may depend on each other, like T <: List[S].
 
@@ -182,13 +185,13 @@ def solve_with_dependent(
 
     solutions: dict[TypeVarId, Type | None] = {}
     for flat_batch in batches:
-        res = solve_iteratively(flat_batch, graph, lowers, uppers)
+        res = solve_iteratively(flat_batch, graph, lowers, uppers, minimize=minimize)
         solutions.update(res)
     return solutions, [free_solutions[tv] for tv in free_vars]
 
 
 def solve_iteratively(
-    batch: list[TypeVarId], graph: Graph, lowers: Bounds, uppers: Bounds
+    batch: list[TypeVarId], graph: Graph, lowers: Bounds, uppers: Bounds, minimize: bool = False
 ) -> Solutions:
     """Solve transitive closure sequentially, updating upper/lower bounds after each step.
 
@@ -214,7 +217,7 @@ def solve_iteratively(
             break
         # Solve each solvable type variable separately.
         s_batch.remove(solvable_tv)
-        result = solve_one(lowers[solvable_tv], uppers[solvable_tv])
+        result = solve_one(lowers[solvable_tv], uppers[solvable_tv], minimize=minimize)
         solutions[solvable_tv] = result
         if result is None:
             # TODO: support backtracking lower/upper bound choices and order within SCCs.
@@ -256,7 +259,9 @@ def _join_sorted_key(t: Type) -> int:
     return 0
 
 
-def solve_one(lowers: Iterable[Type], uppers: Iterable[Type]) -> Type | None:
+def solve_one(
+    lowers: Iterable[Type], uppers: Iterable[Type], minimize: bool = False, maximize: bool = False
+) -> Type | None:
     """Solve constraints by finding by using meets of upper bounds, and joins of lower bounds."""
 
     candidate: Type | None = None
@@ -310,18 +315,44 @@ def solve_one(lowers: Iterable[Type], uppers: Iterable[Type]) -> Type | None:
         source_any = top if isinstance(p_top, AnyType) else bottom
         assert isinstance(source_any, ProperType) and isinstance(source_any, AnyType)
         return AnyType(TypeOfAny.from_another_any, source_any=source_any)
-    elif bottom is None:
-        if top:
+
+    assert not (minimize and maximize)
+
+    if minimize:  # pick minimum solution
+        if bottom is None and top is None:
+            return None
+        elif bottom is None:
+            candidate = UninhabitedType()
+        elif top is None:
+            candidate = bottom
+        elif is_subtype(bottom, top):
+            candidate = bottom
+        else:
+            candidate = None
+    elif maximize:  # choose "largest" solution
+        if bottom is None and top is None:
+            return None
+        elif bottom is None:
+            candidate = top
+        elif top is None:
+            assert p_bottom is not None
+            candidate = object_or_any_from_type(p_bottom)
+        elif is_subtype(bottom, top):
             candidate = top
         else:
-            # No constraints for type variable
+            candidate = None
+    else:  # choose "best" solution
+        if bottom is None and top is None:
             return None
-    elif top is None:
-        candidate = bottom
-    elif is_subtype(bottom, top):
-        candidate = bottom
-    else:
-        candidate = None
+        elif bottom is None:
+            candidate = top
+        elif top is None:
+            candidate = bottom
+        elif is_subtype(bottom, top):
+            candidate = bottom
+        else:
+            candidate = None
+
     return candidate
 
 

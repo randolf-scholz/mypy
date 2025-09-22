@@ -8,6 +8,7 @@ from typing import NamedTuple
 from mypy.constraints import (
     SUBTYPE_OF,
     SUPERTYPE_OF,
+    Constraint,
     infer_constraints,
     infer_constraints_for_callable,
 )
@@ -39,6 +40,8 @@ def infer_function_type_arguments(
     context: ArgumentInferContext,
     strict: bool = True,
     allow_polymorphic: bool = False,
+    extra_constraints: list[Constraint | None] = None,
+    minimize: bool = False,
 ) -> tuple[list[Type | None], list[TypeVarLikeType]]:
     """Infer the type arguments of a generic function.
 
@@ -58,9 +61,12 @@ def infer_function_type_arguments(
         callee_type, arg_types, arg_kinds, arg_names, formal_to_actual, context
     )
 
+    if extra_constraints:
+        constraints += extra_constraints
+
     # Solve constraints.
     type_vars = callee_type.variables
-    return solve_constraints(type_vars, constraints, strict, allow_polymorphic)
+    return solve_constraints(type_vars, constraints, strict, allow_polymorphic, minimize=minimize)
 
 
 def infer_type_arguments(

@@ -2361,3 +2361,25 @@ describe(CWrong())  # E: Argument 1 to "describe" has incompatible type "CWrong"
                     # N: "CWrong.__call__" has type "Callable[[Arg(int, 'x')], None]"
 describe(f)
 [builtins fixtures/isinstancelist.pyi]
+
+
+[case testAssignmentOuterContext]
+# https://github.com/python/mypy/issues/16310
+from typing import TypeVar, Generic, Union
+
+T = TypeVar('T')
+U = TypeVar('U')
+
+class Test(Generic[T, U]): pass
+
+def test(gen: Test[T, U]) -> tuple[T, Union[U, str]]: ...
+
+def call() -> Test[str, int]: ...
+
+def caller_bad() -> None:
+    x, y = test(call())
+
+def caller_ok() -> None:
+    res = test(call())
+    x, y = res
+[builtins fixtures/tuple.pyi]

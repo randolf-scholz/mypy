@@ -2427,20 +2427,20 @@ a2.foo2()
 [case testUnificationEmptyListLeft]
 def f(): pass
 a = [] if f() else [0]
-a() # E: "list[int]" not callable
+reveal_type(a) # N: Revealed type is "builtins.list[builtins.int]"
 [builtins fixtures/list.pyi]
 
 [case testUnificationEmptyListRight]
 def f(): pass
 a = [0] if f() else []
-a() # E: "list[int]" not callable
+reveal_type(a) # N: Revealed type is "builtins.list[builtins.int]"
 [builtins fixtures/list.pyi]
 
 [case testUnificationEmptyListLeftInContext]
 from typing import List
 def f(): pass
 a = [] if f() else [0] # type: list[int]
-a() # E: "list[int]" not callable
+reveal_type(a) # N: Revealed type is "builtins.list[builtins.int]"
 [builtins fixtures/list.pyi]
 
 [case testUnificationEmptyListRightInContext]
@@ -2448,37 +2448,37 @@ a() # E: "list[int]" not callable
 from typing import List
 def f(): pass
 a = [0] if f() else [] # type: list[int]
-a() # E: "list[int]" not callable
+reveal_type(a) # N: Revealed type is "builtins.list[builtins.int]"
 [builtins fixtures/list.pyi]
 
 [case testUnificationEmptySetLeft]
 def f(): pass
 a = set() if f() else {0}
-a() # E: "set[int]" not callable
+reveal_type(a) # N: Revealed type is "builtins.set[builtins.int]"
 [builtins fixtures/set.pyi]
 
 [case testUnificationEmptyDictLeft]
 def f(): pass
 a = {} if f() else {0: 0}
-a() # E: "dict[int, int]" not callable
+reveal_type(a) # N: Revealed type is "builtins.dict[builtins.int, builtins.int]"
 [builtins fixtures/dict.pyi]
 
 [case testUnificationEmptyDictRight]
 def f(): pass
 a = {0: 0} if f() else {}
-a() # E: "dict[int, int]" not callable
+reveal_type(a) # N: Revealed type is "builtins.dict[builtins.int, builtins.int]"
 [builtins fixtures/dict.pyi]
 
 [case testUnificationDictWithEmptyListLeft]
 def f(): pass
 a = {0: []} if f() else {0: [0]}
-a() # E: "dict[int, list[int]]" not callable
+reveal_type(a) # N: Revealed type is "builtins.dict[builtins.int, builtins.list[builtins.int]]"
 [builtins fixtures/dict.pyi]
 
 [case testUnificationDictWithEmptyListRight]
 def f(): pass
 a = {0: [0]} if f() else {0: []}
-a() # E: "dict[int, list[int]]" not callable
+reveal_type(a) # N: Revealed type is "builtins.dict[builtins.int, builtins.list[builtins.int]]"
 [builtins fixtures/dict.pyi]
 
 [case testMisguidedSetItem]
@@ -3388,7 +3388,7 @@ from typing import Any, Union, Iterable
 y: Union[Iterable[Any], Any]
 x: Union[Iterable[Any], Any]
 x = [y]
-reveal_type(x)  # N: Revealed type is "builtins.list[Any]"
+reveal_type(x)  # N: Revealed type is "builtins.list[Union[typing.Iterable[Any], Any]]"
 [builtins fixtures/list.pyi]
 
 [case testInferredTypeIsSimpleNestedListLoop]
@@ -3410,7 +3410,7 @@ def test(seq: List[Union[Iterable, Any]]) -> None:
     for k in seq:
         if bool():
             k = [k]
-            reveal_type(k)  # N: Revealed type is "builtins.list[Any]"
+            reveal_type(k)  # N: Revealed type is "builtins.list[Union[typing.Iterable[Any], Any]]"
 [builtins fixtures/list.pyi]
 
 [case testErasedTypeRuntimeCoverage]

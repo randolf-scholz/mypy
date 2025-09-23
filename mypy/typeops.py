@@ -8,8 +8,10 @@ NOTE: These must not be accessed from mypy.nodes or mypy.types to avoid import
 from __future__ import annotations
 
 import itertools
+from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from typing import Any, Callable, TypeVar, cast
+from typing_extensions import TypeGuard, NewType, TypeIs, TypeAlias
 
 from mypy.checker_state import checker_state
 from mypy.copytype import copy_type
@@ -63,10 +65,11 @@ from mypy.types import (
     flatten_nested_unions,
     get_proper_type,
     get_proper_types,
-    remove_dups,
+    remove_dups, flatten_nested_tuples, find_unpack_in_list,
 )
 from mypy.typetraverser import TypeTraverserVisitor
 from mypy.typevars import fill_typevars
+from mypyc.sametype import is_same_type
 
 
 def is_recursive_pair(s: Type, t: Type) -> bool:
@@ -602,6 +605,12 @@ def make_simplified_union(
     ):
         simplified_set = try_contracting_literals_in_union(simplified_set)
 
+    # Step 5: Simplify unions of certain tuple types.
+    #   For example: tuple[()] | tuple[int, *tuple[int, ...]] -> tuple[int, ...]
+    simplified_set = _simplify_homogeneous_tuple_types(simplified_set)
+
+
+
     result = get_proper_type(UnionType.make_union(simplified_set, line, column))
 
     nitems = len(items)
@@ -627,6 +636,116 @@ def make_simplified_union(
                 fallback.extra_attrs = None
 
     return result
+
+
+TupleInstance = NewType("TupleInstance", Instance)
+"""An instance of a nominal subclass of builtins.tuple[T, ...]"""
+BuiltinsTupleInstance = NewType("BuiltinsTupleInstance", TupleInstance)
+"""An instance of builtins.tuple[T, ...]."""
+HomogeneousTupleType = TupleType | TupleInstance
+"""A tuple with homogeneous item types like tuple[T, ...] or tuple[T, T, T]."""
+
+
+def is_builtins_tuple_instance_type(t: ProperType) -> TypeIs[BuiltinsTupleInstance]:
+    r"""Is this type a nominal subtype of builtins.tuple?"""
+    return isinstance(t, Instance) and t.type.fullname == "builtins.tuple" and len(t.args) == 1
+
+def is_tuple_instance_type(t: ProperType) -> TypeIs[TupleInstance]:
+    return get_builtin_tuple_typeinfo(t) is not None
+
+def get_builtin_tuple_typeinfo(t: ProperType) -> TypeInfo | None:
+    if not isinstance(t, Instance):
+        return None
+    for base in t.type.mro:
+        if base.fullname == "builtins.tuple":
+            return base
+    return None
+
+def as_builtins_tuple_instance_type(t: TupleInstance) -> BuiltinsTupleInstance:
+    if not is_tuple_instance_type(t):
+        raise TypeError
+
+    builtin_tuple_typeinfo = get_builtin_tuple_typeinfo(t)
+    assert builtin_tuple_typeinfo is not None
+    return map_instance_to_supertype(t, builtin_tuple_typeinfo)
+
+
+def get_tuple_instance_item_type(t: TupleInstance) -> Type:
+    tuple_instance = as_builtins_tuple_instance_type(t)
+    assert is_builtins_tuple_instance_type(tuple_instance)
+    return tuple_instance.args[0]
+
+
+def _simplify_homogeneous_tuple_types(items: set[Type]) -> set[Type]:
+    result = set()
+
+    homogeneous_tuples: dict[Type, list[Instance | TupleType]] = defaultdict(list)
+
+    # step 1. get all homogeneous tuple types and get their homogeneous types
+    for t in items:
+        if not _is_homogeneous_tuple_type(get_proper_type(t)):
+            result.add(t)
+        else:
+            pass
+
+def _get_tuple_instance_item_type(t: TupleInstance) -> Type:
+    if not is_tuple_instance_type(t):
+        raise TypeError
+
+
+def _get_homogeneous_tuple_item_type(t: HomogeneousTupleType) -> Type:
+    if is_tuple_instance_type(t):
+      return _get_tuple_instance_item_type(t)
+
+
+    elif isinstance(t, TupleType):
+        items = flatten_nested_tuples(t.items)
+        if not items:
+            return True
+
+        # determine the generic type.
+        unpack_index = find_unpack_in_list(items)
+        if unpack_index is not None:
+            unpack = items[unpack_index]
+            assert isinstance(unpack, UnpackType)
+            unpacked = get_proper_type(unpack)
+            if isinstance(unpacked, Instance) and unpacked.type.fullname == "builtins.tuple":
+                return unpacked.args[0]
+            else:
+                # TypeVarTuple, etc.
+                return False
+        else:
+            # simply take the first item
+            return items[0]
+
+    return False
+
+
+def _is_homogeneous_tuple_type(t: ProperType) -> TypeIs[HomogeneousTupleType]:
+    if is_tuple_instance_type(t):
+        return True
+    if isinstance(t, TupleType):
+        items = flatten_nested_tuples(t.items)
+        if not items:
+            return True
+
+        # determine the generic type.
+        unpack_index = find_unpack_in_list(items)
+        if unpack_index is not None:
+            unpack = items[unpack_index]
+            assert isinstance(unpack, UnpackType)
+            unpacked = get_proper_type(unpack)
+            if isinstance(unpacked, Instance) and unpacked.type.fullname == "builtins.tuple":
+                generic_type = unpacked.args[0]
+            else:
+                # TypeVarTuple, etc.
+                return False
+        else:
+            # simply take the first item
+            generic_type = items[0]
+
+        return all(is_same_type(t, generic_type) for i, t in enumerate(items) if i != unpack_index)
+    return False
 
 
 def _remove_redundant_union_items(items: list[Type], keep_erased: bool) -> list[Type]:

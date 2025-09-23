@@ -11,7 +11,7 @@ import itertools
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from typing import Any, Callable, TypeVar, cast
-from typing_extensions import TypeGuard, NewType, TypeIs, TypeAlias
+from typing_extensions import NewType, TypeIs
 
 from mypy.checker_state import checker_state
 from mypy.copytype import copy_type
@@ -62,10 +62,12 @@ from mypy.types import (
     UninhabitedType,
     UnionType,
     UnpackType,
+    find_unpack_in_list,
+    flatten_nested_tuples,
     flatten_nested_unions,
     get_proper_type,
     get_proper_types,
-    remove_dups, flatten_nested_tuples, find_unpack_in_list,
+    remove_dups,
 )
 from mypy.typetraverser import TypeTraverserVisitor
 from mypy.typevars import fill_typevars
@@ -609,8 +611,6 @@ def make_simplified_union(
     #   For example: tuple[()] | tuple[int, *tuple[int, ...]] -> tuple[int, ...]
     simplified_set = _simplify_homogeneous_tuple_types(simplified_set)
 
-
-
     result = get_proper_type(UnionType.make_union(simplified_set, line, column))
 
     nitems = len(items)
@@ -650,8 +650,10 @@ def is_builtins_tuple_instance_type(t: ProperType) -> TypeIs[BuiltinsTupleInstan
     r"""Is this type a nominal subtype of builtins.tuple?"""
     return isinstance(t, Instance) and t.type.fullname == "builtins.tuple" and len(t.args) == 1
 
+
 def is_tuple_instance_type(t: ProperType) -> TypeIs[TupleInstance]:
     return get_builtin_tuple_typeinfo(t) is not None
+
 
 def get_builtin_tuple_typeinfo(t: ProperType) -> TypeInfo | None:
     if not isinstance(t, Instance):
@@ -660,6 +662,7 @@ def get_builtin_tuple_typeinfo(t: ProperType) -> TypeInfo | None:
         if base.fullname == "builtins.tuple":
             return base
     return None
+
 
 def as_builtins_tuple_instance_type(t: TupleInstance) -> BuiltinsTupleInstance:
     if not is_tuple_instance_type(t):
@@ -688,6 +691,7 @@ def _simplify_homogeneous_tuple_types(items: set[Type]) -> set[Type]:
         else:
             pass
 
+
 def _get_tuple_instance_item_type(t: TupleInstance) -> Type:
     if not is_tuple_instance_type(t):
         raise TypeError
@@ -695,8 +699,7 @@ def _get_tuple_instance_item_type(t: TupleInstance) -> Type:
 
 def _get_homogeneous_tuple_item_type(t: HomogeneousTupleType) -> Type:
     if is_tuple_instance_type(t):
-      return _get_tuple_instance_item_type(t)
-
+        return _get_tuple_instance_item_type(t)
 
     elif isinstance(t, TupleType):
         items = flatten_nested_tuples(t.items)
